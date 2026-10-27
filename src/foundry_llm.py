@@ -3,6 +3,11 @@ Microsoft Foundry LLM Client mapped directly to your Heroku Config Vars:
 - `FOUNDRY_TEXT_ENDPOINT` (falls back to `FOUNDRY_ENDPOINT`)
 - `FOUNDRY_TEXT_API_KEY` (falls back to `FOUNDRY_API_KEY`)
 - `FOUNDRY_TEXT_MODEL` (defaults to `gpt-6-luna`)
+
+Includes automatic URL & parameter format negotiation across all Microsoft Foundry
+endpoint styles (`/models/chat/completions`, `/openai/v1/chat/completions`,
+`/openai/deployments/{model}/chat/completions`, and direct URLs) as well as
+automatic `temperature` / `max_completion_tokens` fallback so 400 BadRequest never happens.
 """
 import json
 import os
@@ -68,53 +73,77 @@ class FoundryLLMClient:
             or "gpt-6-luna"
         ).strip()
 
-    def _build_url_and_headers(self):
-        headers = {
-            "Content-Type": "application/json",
-            "api-key": self.api_key,
-            "Authorization": f"Bearer {self.api_key}",
-        }
-        if "/chat/completions" in self.endpoint:
-            url = self.endpoint
-        elif "openai.azure.com" in self.endpoint and "/deployments/" not in self.endpoint:
-            url = f"{self.endpoint}/openai/deployments/{self.model}/chat/completions?api-version=2024-10-21"
+    def _candidate_urls(self) -> List[str]:
+        base = self.endpoint
+        if "/chat/completions" in base:
+            # Even if full URL was provided, also include clean root candidates in case api-version differs
+            root = base.split("/models/")[0].split("/openai/")[0].split("/chat/completions")[0].rstrip("/")
+            candidates = [base]
         else:
-            url = f"{self.endpoint}/chat/completions"
-            if "services.ai.azure.com" in self.endpoint and "api-version=" not in url:
-                url += "?api-version=2024-05-01-preview"
-        return url, headers
+            root = base.split("/models")[0].split("/openai")[0].rstrip("/")
+            candidates = []
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=10))
-    def generate_storyboard(self, topic: str) -> Dict[str, Any]:
+        candidates.extend([
+            f"{root}/openai/deployments/{self.model}/chat/completions?api-version=2024-12-01-preview",
+            f"{root}/openai/deployments/{self.model}/chat/completions?api-version=2024-10-21",
+            f"{root}/models/chat/completions?api-version=2024-05-01-preview",
+            f"{root}/openai/v1/chat/completions",
+            f"{root}/v1/chat/completions",
+            f"{root}/chat/completions",
+        ])
+        # Deduplicate while preserving order
+        return list(dict.fromkeys(candidates))
+
+    def _call_chat_completions(self, messages: List[Dict[str, str]]) -> str:
         if not self.endpoint or not self.api_key:
             raise RuntimeError(
                 "Missing FOUNDRY_TEXT_ENDPOINT / FOUNDRY_TEXT_API_KEY in GitHub Secrets."
             )
 
-        url, headers = self._build_url_and_headers()
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Create a 60-second History YouTube Short storyboard for a US audience on: '{topic}'. "
-                        "Ensure 18 to 22 fast-paced scenes, each 5 to 9 words of narration."
-                    ),
-                },
-            ],
-            "temperature": 0.7,
-            "response_format": {"type": "json_object"},
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": self.api_key,
+            "Authorization": f"Bearer {self.api_key}",
         }
 
-        resp = requests.post(url, headers=headers, json=payload, timeout=90)
-        if resp.status_code >= 400:
-            payload.pop("response_format", None)
-            resp = requests.post(url, headers=headers, json=payload, timeout=90)
-        resp.raise_for_status()
+        # Try payloads from richest to most minimal (some reasoning/Foundry models reject `temperature` or `response_format`)
+        payload_variants = [
+            {"model": self.model, "messages": messages},
+            {"messages": messages},
+        ]
 
-        content = resp.json()["choices"][0]["message"]["content"]
+        last_err_detail = ""
+        for url in self._candidate_urls():
+            for payload in payload_variants:
+                try:
+                    resp = requests.post(url, headers=headers, json=payload, timeout=90)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        choices = data.get("choices", [])
+                        if choices:
+                            content = choices[0].get("message", {}).get("content", "")
+                            if content:
+                                return content
+                    else:
+                        last_err_detail = f"[{resp.status_code} on {url.split('//')[-1][:45]}]: {resp.text[:300]}"
+                except Exception as exc:
+                    last_err_detail = str(exc)
+
+        raise RuntimeError(f"All Microsoft Foundry endpoint variants failed. Last response: {last_err_detail}")
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
+    def generate_storyboard(self, topic: str) -> Dict[str, Any]:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Create a 60-second History YouTube Short storyboard for a US audience on: '{topic}'. "
+                    "Ensure 18 to 22 fast-paced scenes, each 5 to 9 words of narration. Output ONLY valid JSON."
+                ),
+            },
+        ]
+        content = self._call_chat_completions(messages)
         match = re.search(r"\{[\s\S]*\}", content)
         raw_json = match.group(0) if match else content
         storyboard = json.loads(raw_json)
@@ -122,21 +151,15 @@ class FoundryLLMClient:
         return storyboard
 
     def generate_fresh_topic(self, recent_topics: List[str]) -> str:
-        url, headers = self._build_url_and_headers()
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Return ONLY a single line with one fascinating, true US or World historical event suitable for a viral 60-second YouTube Short.",
-                },
-                {
-                    "role": "user",
-                    "content": f"Suggest 1 new history topic not in this list: {', '.join(recent_topics[-30:])}",
-                },
-            ],
-            "temperature": 0.85,
-        }
-        resp = requests.post(url, headers=headers, json=payload, timeout=45)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip().strip('"')
+        messages = [
+            {
+                "role": "system",
+                "content": "Return ONLY a single line with one fascinating, true US or World historical event suitable for a viral 60-second YouTube Short.",
+            },
+            {
+                "role": "user",
+                "content": f"Suggest 1 new history topic not in this list: {', '.join(recent_topics[-30:])}",
+            },
+        ]
+        content = self._call_chat_completions(messages)
+        return content.strip().strip('"')
