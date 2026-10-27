@@ -1,0 +1,93 @@
+name: Automated US History Shorts (Every 12 Hours)
+
+on:
+  schedule:
+    # Runs every 12 hours (2 Shorts per day)
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+    inputs:
+      custom_topic:
+        description: 'Optional custom history topic (leave blank to auto-pick next topic)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Skip YouTube upload (render video only)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  generate-and-upload-short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up System Dependencies (FFmpeg & Fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-montserrat fonts-liberation fonts-dejavu-core libmagic1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate Audio SFX Cues
+        run: |
+          python src/sfx_generator.py
+
+      - name: Run End-to-End History Short Pipeline
+        env:
+          # Exact match with your existing Heroku Config Vars:
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION || 'centralindia' }}
+          AZURE_TTS_VOICE: ${{ secrets.AZURE_TTS_VOICE || 'en-US-BrianMultilingualNeural' }}
+          BG_MUSIC_VOLUME: ${{ secrets.BG_MUSIC_VOLUME || '0.25' }}
+          FOUNDRY_API_KEY: ${{ secrets.FOUNDRY_API_KEY }}
+          FOUNDRY_ENDPOINT: ${{ secrets.FOUNDRY_ENDPOINT }}
+          FOUNDRY_IMAGE_MODEL: ${{ secrets.FOUNDRY_IMAGE_MODEL || 'MAI-Image-2.6-Flash' }}
+          FOUNDRY_TEXT_API_KEY: ${{ secrets.FOUNDRY_TEXT_API_KEY }}
+          FOUNDRY_TEXT_ENDPOINT: ${{ secrets.FOUNDRY_TEXT_ENDPOINT }}
+          FOUNDRY_TEXT_MODEL: ${{ secrets.FOUNDRY_TEXT_MODEL || 'gpt-6-luna' }}
+          SHORTS_PER_DAY: ${{ secrets.SHORTS_PER_DAY || '2' }}
+          VOICE_SPEED_PERCENT: ${{ secrets.VOICE_SPEED_PERCENT || '3' }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          # Optional Pexels key (not required; Wikimedia + MAI-Image-2.6-Flash work out of the box)
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          CUSTOM_TOPIC: ${{ github.event.inputs.custom_topic }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          python src/main.py
+
+      - name: Upload Rendered Short as Workflow Artifact (Backup)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rendered-short-${{ github.run_id }}
+          path: |
+            output/final_short.mp4
+            output/subtitles.ass
+            output/metadata.json
+          retention-days: 7
+
+      - name: Commit Updated Topic Queue & History State
+        if: success() && github.event.inputs.dry_run != 'true'
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "History Shorts Auto-Bot"
+          git add data/used_topics.json data/upload_history.json
+          git diff --staged --quiet || git commit -m "chore: record completed history short [skip ci]"
+          git push
