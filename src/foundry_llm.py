@@ -4,10 +4,11 @@ Microsoft Foundry LLM Client mapped directly to your Heroku Config Vars:
 - `FOUNDRY_TEXT_API_KEY` (falls back to `FOUNDRY_API_KEY`)
 - `FOUNDRY_TEXT_MODEL` (defaults to `gpt-6-luna`)
 
-Includes automatic URL & parameter format negotiation across all Microsoft Foundry
-endpoint styles (`/models/chat/completions`, `/openai/v1/chat/completions`,
-`/openai/deployments/{model}/chat/completions`, and direct URLs) as well as
-automatic `temperature` / `max_completion_tokens` fallback so 400 BadRequest never happens.
+Includes:
+- Automatic URL & parameter format negotiation across all Microsoft Foundry endpoint styles.
+- Strict topic-anchored archival query rules so Wikimedia never returns random modern celebrities
+  or irrelevant Metaphor/Pun matches (like "rubber" -> Prince Harry).
+- Strict AI image credit conservation (`MAX_AI_IMAGES_PER_SHORT`, default `2`).
 """
 import json
 import os
@@ -20,34 +21,37 @@ SYSTEM_PROMPT = """You are an elite viral US documentary director and "Editor V1
 Your audience is in the United States. Write in punchy, natural American English.
 Your job is to write a gripping, factually accurate 46-to-54 second spoken script (~115 to 130 words total, strictly under 58 seconds) and break it into 16 to 18 rapid visual scenes.
 
-STRICT EDITOR V1 PACING GUARDRAILS:
-1. ZERO 4-SECOND SHOTS: Every single scene MUST correspond to 5 to 9 spoken words (~2.0 to 3.3 seconds). A shot staying on screen for 4 seconds is an editing mistake.
+STRICT EDITOR V1 PACING & ARCHIVAL ACCURACY GUARDRAILS:
+1. ZERO 4-SECOND SHOTS: Every single scene MUST correspond to 5 to 9 spoken words (~2.0 to 3.3 seconds).
 2. HIGH-RETENTION HOOK (Scene 1 & 2): Start in the middle of the action or a shocking historical paradox in the first 3 seconds.
-3. REAL ARCHIVAL & AI CINEMATIC VISUALS: For each scene, provide:
-   - `narration`: The exact 5-9 words spoken during this cut.
-   - `wikimedia_query`: Specific historical person, place, artifact, battle painting, or archival photo on Wikipedia / Wikimedia Commons (e.g. "Ghost Army WWII inflatable tank", "Roanoke CROATOAN engraving").
-   - `image_prompt`: Detailed cinematic vertical 9:16 historical illustration prompt for `MAI-Image-2.6-Flash` in case Wikimedia has no exact archival photo or when a dramatic close-up visual pun is needed.
-   - `pexels_query`: A dynamic 2-3 word motion B-roll search term (e.g. "stormy ocean waves", "vintage pocket watch").
-   - `prefer_media`: Either "wikimedia" (for authentic historical archival photos/paintings) or "ai_image" (for high-impact cinematic `MAI-Image-2.6-Flash` shots). Mix ~65% "wikimedia" and ~35% "ai_image".
+3. TOPIC-ANCHORED ARCHIVAL SEARCH QUERIES (CRITICAL — NO RANDOM MODERN PEOPLE OR METAPHORS):
+   - Every `wikimedia_query` MUST be a concrete, historically specific noun phrase anchored to the main historical topic, era, and entity (e.g., "23rd Headquarters Special Troops WWII dummy tank", "M4 Sherman tank Western Front 1944", "US Army Signal Corps radio operator WWII", "9th US Army Rhine crossing 1945").
+   - NEVER use isolated generic adjectives or materials in `wikimedia_query` (like "rubber", "looks real", "illusion", "actors", "secret") that could match modern celebrities, sports events, or tourist plaques.
+   - Also provide `wikipedia_article`: the exact title of a relevant historical Wikipedia article for that scene (e.g., "Ghost Army", "Operation Viersen", "Dummy tank", "M4 Sherman", "Operation Plunder").
+4. CONSERVE AI IMAGE CREDITS (`prefer_media`):
+   - Default to `"wikimedia"` for at least 85-90% of scenes so authentic archival photographs, battle paintings, maps, and historical portraits are used for free.
+   - Set `"prefer_media": "ai_image"` on AT MOST 1 or 2 scenes per entire Short (specifically Scene 1 hook or one dramatic close-up where no historical photo exists).
+5. SHORT BOUNDARY-SAFE CALLOUT BADGES:
+   - `on_screen_callout`: Short 1-3 word punchy historical date, location, or code name under 18 characters (e.g. "FRANCE, 1944", "TOP SECRET", "MARCH 1945"). Leave empty `""` on half the scenes so badges feel selective and impactful.
+6. CINEMATIC CAMERA & MOOD:
    - `effect`: Choose from ["blur_snap_zoom_in", "fast_punch_in", "pan_right_sharp", "vintage_sepia_zoom", "high_contrast_zoom_out"].
-   - `sfx`: Choose from ["boom", "whoosh", "shutter", "pop"].
-   - `on_screen_callout`: Short 1-3 word punchy badge or year (e.g. "JUNE 1944", "TOP SECRET", "BOSTON, 1919") to overlay selectively.
 
 Return ONLY valid JSON matching this schema:
 {
   "title": "Viral US YouTube Short title under 65 chars (include #shorts)",
   "description": "Engaging description with historical context and hashtags (#history #shorts #ushistory #documentary)",
   "tags": ["history", "shorts", "ushistory", "documentary"],
+  "historical_era_keywords": ["WWII", "1944", "1945", "US Army", "Ghost Army"],
   "scenes": [
     {
       "scene_id": 1,
-      "narration": "In 1944, four American soldiers lifted a forty-ton Sherman tank...",
-      "wikimedia_query": "Ghost Army inflatable tank WWII",
-      "image_prompt": "Photorealistic archival 1944 WWII black and white colorized vertical photograph of US soldiers holding up an inflatable rubber Sherman tank, dramatic lighting, 9:16",
+      "narration": "In 1944, an entire American army appeared from nowhere.",
+      "wikimedia_query": "Ghost Army 23rd Headquarters Special Troops inflatable tank 1944",
+      "wikipedia_article": "Ghost Army",
+      "image_prompt": "Photorealistic archival 1944 WWII vertical photograph of US soldiers positioning an inflatable dummy Sherman tank in misty French countryside, dramatic documentary lighting, 9:16",
       "pexels_query": "vintage military film",
       "prefer_media": "wikimedia",
       "effect": "blur_snap_zoom_in",
-      "sfx": "boom",
       "on_screen_callout": "FRANCE, 1944"
     }
   ]
@@ -76,7 +80,6 @@ class FoundryLLMClient:
     def _candidate_urls(self) -> List[str]:
         base = self.endpoint
         if "/chat/completions" in base:
-            # Even if full URL was provided, also include clean root candidates in case api-version differs
             root = base.split("/models/")[0].split("/openai/")[0].split("/chat/completions")[0].rstrip("/")
             candidates = [base]
         else:
@@ -91,7 +94,6 @@ class FoundryLLMClient:
             f"{root}/v1/chat/completions",
             f"{root}/chat/completions",
         ])
-        # Deduplicate while preserving order
         return list(dict.fromkeys(candidates))
 
     def _call_chat_completions(self, messages: List[Dict[str, str]]) -> str:
@@ -106,7 +108,6 @@ class FoundryLLMClient:
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        # Try payloads from richest to most minimal (some reasoning/Foundry models reject `temperature` or `response_format`)
         payload_variants = [
             {"model": self.model, "messages": messages},
             {"messages": messages},
@@ -133,13 +134,17 @@ class FoundryLLMClient:
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
     def generate_storyboard(self, topic: str) -> Dict[str, Any]:
+        max_ai = int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "2"))
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": (
                     f"Create a 60-second History YouTube Short storyboard for a US audience on: '{topic}'. "
-                    "Ensure 16 to 18 fast-paced scenes, each 6 to 8 words of narration (~120 words total so the audio stays under 55 seconds). Output ONLY valid JSON."
+                    "Ensure 16 to 18 fast-paced scenes, each 6 to 8 words of narration (~120 words total so the audio stays under 55 seconds). "
+                    f"CRITICAL: Set `prefer_media` to 'wikimedia' for almost all scenes (at most {max_ai} scenes may use 'ai_image'). "
+                    "Every `wikimedia_query` and `wikipedia_article` must strictly include the historical subject/era so no modern celebrity or irrelevant image is ever matched. "
+                    "Output ONLY valid JSON."
                 ),
             },
         ]
@@ -147,7 +152,11 @@ class FoundryLLMClient:
         match = re.search(r"\{[\s\S]*\}", content)
         raw_json = match.group(0) if match else content
         storyboard = json.loads(raw_json)
-        print(f"[FoundryLLM] Generated '{storyboard.get('title')}' ({len(storyboard.get('scenes', []))} scenes) via {self.model}.")
+        storyboard["topic"] = topic
+        print(
+            f"[FoundryLLM] Generated '{storyboard.get('title')}' "
+            f"({len(storyboard.get('scenes', []))} scenes, max_ai={max_ai}) via {self.model}."
+        )
         return storyboard
 
     def generate_fresh_topic(self, recent_topics: List[str]) -> str:
