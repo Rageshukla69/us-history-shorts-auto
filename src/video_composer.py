@@ -1,21 +1,25 @@
 """
-Professional Documentary Video Composer (1080x1920 @ 30fps vertical 9:16).
+Professional Documentary Video Composer (v4.0 — ShortGPT & MoneyPrinterTurbo Inspired).
 Key Upgrades:
-- Frosted Cinematic Background Canvas: Landscape or square archival photographs are never awkwardly
-  cropped into unrecognizable blobs (like a giant patch or cut-off soldiers); instead, images with
-  aspect ratios wider than 0.68 are framed over a dark blurred atmospheric 9:16 background with soft
-  vignette, while vertical/near-vertical plates fill the 9:16 frame with smooth Ken Burns motion.
-- Bottom & Top Gradient Readability Vignette: Ensures captions and callout badges are 100% legible
-  against any background while staying strictly within the safe boundary.
-- Mysterious Background Music with Automatic Voiceover Ducking (`sidechaincompress`):
-  Plays ONLY the dark mysterious documentary score (`mystery_bgm.wav`) ducked smoothly under the narrator,
-  with ZERO cartoon transition sound effects (no zoop, whoosh, pop, or shutter).
+1. Full-Bleed Vertical Framing (`_prepare_vertical_archival_plate`):
+   - Portrait and near-square photos (`aspect <= 1.18`) fill the entire 9:16 vertical screen
+     (smartly biased toward the upper-third so faces and rockets are never cut off and there are
+     NO ugly black boxes around portrait photos!).
+   - Wide landscape archival diagrams/photos (`aspect > 1.18`) are scaled generously (`96%` width)
+     over a vibrant softly blurred glass backdrop with a subtle 3px warm cinema frame.
+2. Multi-Source Background Music Selector (`_select_bgm_track`):
+   - Just like `MoneyPrinterTurbo`, if you drop any `.mp3`, `.wav`, or `.ogg` track into `assets/bgm/`
+     (or set `BGM_URL` in GitHub Secrets), it automatically uses your custom track!
+   - Otherwise uses the built-in uplifting Hans Zimmer "Interstellar" organ & piano arpeggio score
+     (`assets/sfx/interstellar_bgm.wav`) with smooth sidechain voiceover ducking.
 """
 import os
+import random
 import subprocess
 from pathlib import Path
 from typing import List
-from PIL import Image, ImageEnhance, ImageFilter
+import requests
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 
 class VideoComposer:
@@ -27,9 +31,9 @@ class VideoComposer:
 
     def __init__(self):
         try:
-            self.bg_music_vol = float(os.getenv("BG_MUSIC_VOLUME", "0.28"))
+            self.bg_music_vol = float(os.getenv("BG_MUSIC_VOLUME", "0.30"))
         except ValueError:
-            self.bg_music_vol = 0.28
+            self.bg_music_vol = 0.30
 
     @staticmethod
     def _run_ffmpeg(cmd: List[str], step_name: str):
@@ -40,9 +44,11 @@ class VideoComposer:
     @classmethod
     def _prepare_vertical_archival_plate(cls, asset_path: Path, out_plate_path: Path) -> Path:
         """
-        Pre-composes non-vertical archival photos (landscape battle photos, square unit patches, portraits)
-        onto a 1260x2240 vertical canvas with a dark frosted atmospheric background so `zoompan` never
-        chops off heads, tanks, or historical subjects.
+        Prepares a 1260x2240 vertical 9:16 plate:
+        - Portrait and near-square images (`aspect <= 1.18`) fill the entire 9:16 frame edge-to-edge
+          with upper-center bias so no ugly letterbox/pillarbox bars appear.
+        - Wide horizontal images (`aspect > 1.18`) sit over a softly blurred atmospheric backdrop
+          with a crisp 3px archival border.
         """
         with Image.open(asset_path) as im:
             rgb = im.convert("RGB")
@@ -51,49 +57,60 @@ class VideoComposer:
 
             target_w, target_h = cls.OVERSAMPLE_W, cls.OVERSAMPLE_H
 
-            if aspect <= 0.66:
+            if aspect <= 1.18:
+                # Full-bleed 9:16 cover (upper-center biased so heads/rockets stay framed)
                 scale = max(target_w / w, target_h / h)
                 new_w, new_h = int(w * scale), int(h * scale)
                 resized = rgb.resize((new_w, new_h), Image.Resampling.LANCZOS)
                 left = (new_w - target_w) // 2
-                top = (new_h - target_h) // 2
+                top = int((new_h - target_h) * 0.28)
                 plate = resized.crop((left, top, left + target_w, top + target_h))
             else:
+                # Wide landscape photo or diagram: rich blurred glass backdrop + large framed card
                 bg_scale = max(target_w / w, target_h / h)
                 bg_w, bg_h = int(w * bg_scale), int(h * bg_scale)
                 bg = rgb.resize((bg_w, bg_h), Image.Resampling.BICUBIC)
                 bg_left = (bg_w - target_w) // 2
                 bg_top = (bg_h - target_h) // 2
                 bg = bg.crop((bg_left, bg_top, bg_left + target_w, bg_top + target_h))
-                bg = bg.filter(ImageFilter.GaussianBlur(radius=36))
-                bg = ImageEnhance.Brightness(bg).enhance(0.32)
-                bg = ImageEnhance.Color(bg).enhance(0.65)
+                bg = bg.filter(ImageFilter.GaussianBlur(radius=28))
+                bg = ImageEnhance.Brightness(bg).enhance(0.45)
+                bg = ImageEnhance.Color(bg).enhance(0.80)
 
-                fg_max_w = int(target_w * 0.94)
-                fg_max_h = int(target_h * 0.62)
+                fg_max_w = int(target_w * 0.96)
+                fg_max_h = int(target_h * 0.68)
                 fg_scale = min(fg_max_w / w, fg_max_h / h)
                 fg_w, fg_h = int(w * fg_scale), int(h * fg_scale)
                 fg = rgb.resize((fg_w, fg_h), Image.Resampling.LANCZOS)
                 fg = ImageEnhance.Contrast(fg).enhance(1.06)
 
                 paste_x = (target_w - fg_w) // 2
-                paste_y = int((target_h - fg_h) * 0.43)
+                paste_y = int((target_h - fg_h) * 0.42)
                 bg.paste(fg, (paste_x, paste_y))
+
+                # Subtle warm archival border around wide landscape plate
+                draw = ImageDraw.Draw(bg)
+                draw.rectangle(
+                    [paste_x - 2, paste_y - 2, paste_x + fg_w + 2, paste_y + fg_h + 2],
+                    outline=(220, 200, 150),
+                    width=3,
+                )
                 plate = bg
 
+            # Smooth bottom & top gradient vignette so captions and badges pop cleanly
             plate_rgba = plate.convert("RGBA")
             grad = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
             grad_px = grad.load()
             for y in range(target_h):
                 alpha = 0
-                if y < int(target_h * 0.14):
-                    alpha = int(115 * (1.0 - y / (target_h * 0.14)))
-                elif y > int(target_h * 0.70):
-                    prog = (y - target_h * 0.70) / (target_h * 0.30)
-                    alpha = int(175 * (prog ** 1.3))
+                if y < int(target_h * 0.13):
+                    alpha = int(105 * (1.0 - y / (target_h * 0.13)))
+                elif y > int(target_h * 0.72):
+                    prog = (y - target_h * 0.72) / (target_h * 0.28)
+                    alpha = int(170 * (prog ** 1.3))
                 if alpha > 0:
                     for x in range(target_w):
-                        grad_px[x, y] = (8, 8, 10, alpha)
+                        grad_px[x, y] = (8, 8, 12, alpha)
 
             composited = Image.alpha_composite(plate_rgba, grad).convert("RGB")
             composited.save(out_plate_path, quality=94)
@@ -160,7 +177,7 @@ class VideoComposer:
         )
 
         mixed_audio_wav = temp_dir / "master_mix.wav"
-        self._build_master_audio_mix(master_vo, mixed_audio_wav)
+        self._build_master_audio_mix(master_vo, mixed_audio_wav, temp_dir)
 
         ass_escaped = (
             str(ass_path.resolve())
@@ -211,7 +228,7 @@ class VideoComposer:
         frames = max(int(round(duration * self.FPS)), 20)
 
         if tight_crop or effect == "fast_punch_in":
-            z_expr = f"min(1.12+0.12*(on/{frames}),1.24)"
+            z_expr = f"min(1.10+0.12*(on/{frames}),1.22)"
             x_expr = "iw/2-(iw/zoom/2)"
             y_expr = "ih/2-(ih/zoom/2)"
         elif effect == "high_contrast_zoom_out" or cam_mode == 1:
@@ -231,7 +248,7 @@ class VideoComposer:
             x_expr = "iw/2-(iw/zoom/2)"
             y_expr = "ih/2-(ih/zoom/2)"
 
-        color_grade = "eq=contrast=1.06:saturation=0.94:brightness=-0.01"
+        color_grade = "eq=contrast=1.06:saturation=0.96:brightness=-0.01"
         if effect == "vintage_sepia_zoom":
             color_grade = "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131,eq=contrast=1.10"
 
@@ -306,25 +323,56 @@ class VideoComposer:
             ]
         self._run_ffmpeg(cmd, f"scene segment {out_path.name}")
 
+    def _select_bgm_track(self, temp_dir: Path) -> Path:
+        """
+        MoneyPrinterTurbo-style BGM selector:
+        1. If `BGM_URL` environment variable is set, downloads that audio track.
+        2. If user placed any `.mp3`, `.wav`, or `.ogg` file inside `assets/bgm/`, randomly picks one.
+        3. Otherwise uses the synthesized uplifting Interstellar organ & piano arpeggio score
+           (`assets/sfx/interstellar_bgm.wav`).
+        """
+        bgm_url = os.getenv("BGM_URL", "").strip()
+        if bgm_url:
+            try:
+                resp = requests.get(bgm_url, timeout=30)
+                resp.raise_for_status()
+                custom_dl = temp_dir / "custom_bgm.mp3"
+                custom_dl.write_bytes(resp.content)
+                print(f"[VideoComposer] Downloaded custom BGM from BGM_URL -> {custom_dl}")
+                return custom_dl
+            except Exception as exc:
+                print(f"[VideoComposer] BGM_URL notice ({exc}); falling back to local BGM.")
+
+        bgm_dir = Path("assets/bgm")
+        if bgm_dir.exists():
+            custom_tracks = [
+                p for p in bgm_dir.iterdir()
+                if p.suffix.lower() in (".mp3", ".wav", ".ogg", ".m4a") and p.stat().st_size > 10_000
+            ]
+            if custom_tracks:
+                chosen = random.choice(custom_tracks)
+                print(f"[VideoComposer] Using custom BGM track from assets/bgm/: {chosen.name}")
+                return chosen
+
+        sfx_dir = Path("assets/sfx")
+        for candidate in ("interstellar_bgm.wav", "mystery_bgm.wav", "ambient_bed.wav"):
+            p = sfx_dir / candidate
+            if p.exists():
+                return p
+        raise RuntimeError("No BGM track found in assets/bgm/ or assets/sfx/.")
+
     def _build_master_audio_mix(
         self,
         master_vo: Path,
         out_wav: Path,
+        temp_dir: Path,
     ):
-        """
-        Mixes the voiceover with the dark mysterious documentary background music (`mystery_bgm.wav`)
-        using smooth sidechain compression (auto-ducking) so the mystery music swells during pauses
-        and sits cleanly underneath the narrator — with ZERO whoosh/zoop/pop sound effects.
-        """
-        sfx_dir = Path("assets/sfx")
-        mystery_bgm = sfx_dir / "mystery_bgm.wav"
-        if not mystery_bgm.exists():
-            mystery_bgm = sfx_dir / "ambient_bed.wav"
+        bgm_track = self._select_bgm_track(temp_dir)
 
         filter_complex = (
             "[0:a]volume=1.05,asplit=2[vo_main][vo_sc];"
             f"[1:a]volume={self.bg_music_vol:.2f}[bgm_raw];"
-            "[bgm_raw][vo_sc]sidechaincompress=threshold=0.03:ratio=4:attack=35:release=320[bgm_ducked];"
+            "[bgm_raw][vo_sc]sidechaincompress=threshold=0.03:ratio=3.5:attack=35:release=350[bgm_ducked];"
             "[vo_main][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.95[aout]"
         )
 
@@ -336,7 +384,7 @@ class VideoComposer:
             "-stream_loop",
             "-1",
             "-i",
-            str(mystery_bgm),
+            str(bgm_track),
             "-filter_complex",
             filter_complex,
             "-map",
@@ -347,4 +395,4 @@ class VideoComposer:
             "2",
             str(out_wav),
         ]
-        self._run_ffmpeg(cmd, "master audio mix with mysterious BGM ducking")
+        self._run_ffmpeg(cmd, "master audio mix with Interstellar BGM ducking")

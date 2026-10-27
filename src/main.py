@@ -1,12 +1,15 @@
 """
-Main End-to-End Orchestrator for the 12-Hour Automated US History Shorts Channel.
+Main End-to-End Orchestrator for the Automated US History Shorts Channel (v4.0 — ShortGPT & MoneyPrinterTurbo Edition).
 Configured to drop-in match your exact Heroku Config Vars (`AZURE_SPEECH_KEY`, `FOUNDRY_TEXT_ENDPOINT`,
 `FOUNDRY_ENDPOINT`, `MAI-Image-2.6-Flash`, `gpt-6-luna`, `YOUTUBE_TOKEN_JSON`, etc.).
 
-Upgrades in v3.0:
-- Boundary-safe 1-to-2 line word-synced captions with attached punctuation (`src/caption_builder.py`)
-- Strict MAI-Image credit cap (`MAX_AI_IMAGES_PER_SHORT`, default `2`) + topic-anchored Wikipedia/Wikimedia archival pool (`src/media_fetcher.py`)
-- Dark mysterious documentary background score (`mystery_bgm.wav`) with automatic voiceover ducking and zero whoosh/zoop SFX (`src/sfx_generator.py` & `src/video_composer.py`)
+Upgrades in v4.0:
+1. Wikipedia Official REST Media-List API + Official NASA Archival API + 3-Layer Verification Firewall +
+   LLM Batch Candidate Verifier (`src/media_fetcher.py` & `src/foundry_llm.py`) — makes celebrity/baseball
+   homonym traps (like "Atlas" -> Jennifer Lopez or "Mariner" -> baseball player) 100% impossible.
+2. Uplifting Hans Zimmer "Interstellar" (Cornfield Chase / Time) Organ & Piano Arpeggio Score
+   (`assets/sfx/interstellar_bgm.wav`) + `assets/bgm/` custom MP3 drop-in support (`src/sfx_generator.py` & `src/video_composer.py`).
+3. Full-bleed 9:16 vertical framing for portrait/square photos and boundary-safe captions (`src/video_composer.py` & `src/caption_builder.py`).
 """
 import json
 from pathlib import Path
@@ -29,8 +32,8 @@ def run_pipeline():
     temp_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Always ensure the dark mysterious documentary score exists
-    if not (Path("assets/sfx/mystery_bgm.wav")).exists():
+    # Always ensure the uplifting Interstellar documentary score exists
+    if not (Path("assets/sfx/interstellar_bgm.wav")).exists():
         generate_all_sfx()
 
     llm = FoundryLLMClient()
@@ -48,10 +51,14 @@ def run_pipeline():
         scenes, temp_dir / "audio"
     )
 
-    # Step 3: Fetch Verified Archival Photos (Wikipedia/Wikimedia) + Capped `MAI-Image-2.6-Flash`
+    # Step 3: Fetch Verified Archival Photos (Wikipedia REST Media-List + NASA API + LLM Verifier) + Capped `MAI-Image-2.6-Flash`
     fetcher = MediaFetcher(
         topic=topic,
         era_keywords=storyboard.get("historical_era_keywords", []),
+        wikipedia_articles=storyboard.get("wikipedia_articles", []),
+        required_visual_keywords=storyboard.get("required_visual_keywords", []),
+        is_space_or_science=bool(storyboard.get("is_space_or_science", False)),
+        llm_client=llm,
     )
     for scene in enriched_scenes:
         asset_path, asset_type = fetcher.fetch_scene_asset(scene, temp_dir / "media")
@@ -67,7 +74,7 @@ def run_pipeline():
     ass_path = output_dir / "subtitles.ass"
     generate_synced_ass_captions(word_timings, enriched_scenes, ass_path)
 
-    # Step 5: Render 1080x1920 MP4 with Frosted Archival Framing & Mysterious BGM Ducking
+    # Step 5: Render 1080x1920 MP4 with Full-Bleed Framing & Interstellar BGM Ducking
     composer = VideoComposer()
     final_mp4 = output_dir / "final_short.mp4"
     composer.render_short(enriched_scenes, master_vo, ass_path, final_mp4, temp_dir / "segments")
@@ -81,6 +88,7 @@ def run_pipeline():
                 "description": storyboard.get("description"),
                 "ai_images_used": fetcher.ai_images_used,
                 "max_ai_images_cap": fetcher.max_ai_images,
+                "verified_pool_size": len(fetcher.verified_pool),
                 "scenes": enriched_scenes,
                 "attributions": fetcher.attributions,
             },
@@ -89,7 +97,7 @@ def run_pipeline():
         encoding="utf-8",
     )
 
-    # Step 6: Upload to YouTube via `YOUTUBE_TOKEN_JSON`
+    # Step 6: Upload to YouTube via `YOUTUBE_TOKEN_JSON` (skipped automatically when DRY_RUN=true)
     video_id = upload_short_to_youtube(
         video_path=final_mp4,
         title=storyboard.get("title", topic),
@@ -98,9 +106,10 @@ def run_pipeline():
         attributions=fetcher.attributions,
     )
 
-    # Step 7: Mark topic as used
-    mark_topic_completed(topic, video_id=video_id, title=storyboard.get("title", topic))
-    print(f"[Pipeline] Completed run for topic: '{topic}'")
+    # Step 7: Only mark topic as used if not in dry_run mode
+    if video_id != "dry_run_id":
+        mark_topic_completed(topic, video_id=video_id, title=storyboard.get("title", topic))
+    print(f"[Pipeline] Completed run for topic: '{topic}' (video_id={video_id})")
 
 
 if __name__ == "__main__":

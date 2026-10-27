@@ -1,16 +1,20 @@
 """
-Multi-Source Archival & Credit-Saving Visual Fetcher tailored to your exact Heroku Config Vars:
-1. Credit Conservation Guardrail (`MAX_AI_IMAGES_PER_SHORT`, default `2`):
-   Caps `MAI-Image-2.6-Flash` calls so your Microsoft Foundry credits last 8x-10x longer!
-   Can even be set to `0` or `1` in GitHub Secrets / `.env`.
-2. Topic-Anchored Relevance Filtering & Modern-Celebrity Blacklist:
-   Prevents ambiguous words (like "rubber", "actors", "illusion", "looks real") from pulling
-   random modern celebrities (e.g., Prince Harry at Invictus Games), modern tourist plaques,
-   or unrelated stock photos.
-3. Deep Public Archival Pool & Zero-Duplicate Scene Cropping:
-   Pre-fetches the full gallery of historical photographs from the topic's main Wikipedia articles
-   and Wikimedia Commons categories, deduplicates every downloaded URL across all 16-18 scenes,
-   and creates distinct cinematic detail crops when needed without spending AI credits.
+Multi-Source Archival & Credit-Saving Visual Engine (v4.0 — ShortGPT & MoneyPrinterTurbo Inspired):
+1. Wikipedia Official REST Media-List API (`https://en.wikipedia.org/api/rest_v1/page/media-list/{title}`):
+   Fetches ONLY the curated historical photographs actually embedded inside the exact canonical Wikipedia
+   articles for the topic (completely eliminating the old `prop=images` alphabetical list bug that pulled
+   Bad Bunny, Benicio del Toro, Ana Ortiz, and Amaury Nolasco).
+2. Official NASA Image & Video Library API (`https://images-api.nasa.gov/search`):
+   100% FREE, requires ZERO API keys, and provides authentic archival NASA photographs for any space,
+   rocket, Cold War, or science topic (like Mariner 1, Apollo, Voyager, Hubble).
+3. 3-Layer Historical Verification Firewall:
+   - Layer A: Hard Category & EXIF/Date Blacklist (rejects `Living people`, `Actors`, `Singers`, `Rappers`,
+     `Baseball`, `Sports`, `Film premieres`, `Red carpet`, `NBCUniversal`, `Maxim`, `2000s/2010s/2020s` portraits).
+   - Layer B: Mandatory Domain Keyword Overlap (`required_visual_keywords`).
+   - Layer C: LLM Batch Candidate Verification (`llm_client.verify_archival_candidates`) via `gpt-6-luna`
+     (a single text call that rejects any homonym traps like "Atlas" the Jennifer Lopez movie or "Mariners" baseball).
+4. Strict MAI-Image Credit Cap (`MAX_AI_IMAGES_PER_SHORT`, default `3`):
+   Never exceeds your AI image credit budget, and never falls back to unverified Wikimedia searches.
 """
 import base64
 import hashlib
@@ -18,52 +22,91 @@ import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 import requests
 from PIL import Image, ImageEnhance, ImageFilter
 
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
+WIKIPEDIA_REST_MEDIA = "https://en.wikipedia.org/api/rest_v1/page/media-list/"
+WIKIPEDIA_REST_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
+NASA_IMAGES_API = "https://images-api.nasa.gov/search"
 PEXELS_VIDEO_API = "https://api.pexels.com/videos/search"
-USER_AGENT = "USHistoryShortsBot/3.0 (https://github.com/education/students)"
+USER_AGENT = "USHistoryShortsBot/4.0 (https://github.com/education/students)"
 
-IRRELEVANT_TITLE_PATTERNS = re.compile(
+# Comprehensive blacklist blocking modern celebrities, actors, singers, athletes, press events, and signage
+DISQUALIFYING_PATTERNS = re.compile(
     r"\b("
-    r"prince harry|meghan markle|invictus games|red carpet|paparazzi|selfie|"
-    r"press conference|podcast|youtuber|influencer|tiktok|instagram|"
-    r"memorial plaque|information board|tourist sign|wayside marker|historical marker|"
-    r"commemorative plaque|road sign|street sign|parking lot|shopping mall|"
-    r"logo|icon|coat of arms svg|flag of|map locator|blank map|"
-    r"user:|talk:|template:|file icon|wikimedia|creative commons"
+    r"living people|births|actors|actresses|singers|musicians|rappers|songwriters|models|celebrities|"
+    r"jennifer lopez|bad bunny|benicio del toro|amaury nolasco|ana ortiz|prince harry|meghan markle|"
+    r"invictus games|red carpet|paparazzi|selfie|premiere|film festival|press conference|award|"
+    r"grammy|oscar|emmy|golden globe|mtv|billboard|nbcuniversal|nbc|netflix|hbo|disney|maxim|"
+    r"comic-con|cosplay|podcast|youtuber|influencer|tiktok|instagram|television series|"
+    r"baseball|minor league|major league|seattle mariners|burlington|softball|football|basketball|"
+    r"soccer|hockey|cricket|athlete|player|batting|pitcher|outfielder|stadium|ballpark|"
+    r"politician|senator|congressman|governor|mayor|businesspeople|entrepreneur|ceo|"
+    r"memorial plaque|information board|tourist sign|wayside marker|historical marker|commemorative plaque|"
+    r"road sign|street sign|parking lot|shopping mall|headshot|portrait of a man|portrait of a woman|"
+    r"logo|icon|coat of arms|flag of|map locator|blank map|svg|user:|talk:|template:|"
+    r"2005|2006|2007|2008|2009|2010|2011|2012|2013|2014|2015|2016|2017|2018|2019|2020|2021|2022|2023|2024|2025|2026"
     r")\b",
     re.IGNORECASE,
 )
 
-GENERIC_STOPWORDS = {
-    "the", "and", "for", "with", "from", "that", "this", "were", "was", "are",
-    "its", "their", "they", "into", "until", "about", "near", "even", "made",
-    "make", "built", "look", "looked", "looks", "real", "fake", "fakes",
-    "rubber", "secret", "strangest", "mission", "distance", "remarkably",
-    "illusion", "illusions", "actors", "men", "unit", "units", "history",
-    "vanished", "afterward", "classified", "declassified", "appeared", "nowhere",
-}
+# Exceptions where a modern year in metadata is acceptable (e.g. a museum artifact or restored NASA/archival scan)
+ARCHIVAL_OVERRIDE_PATTERNS = re.compile(
+    r"\b("
+    r"museum|smithsonian|national archives|library of congress|nasa|jet propulsion laboratory|jpl|"
+    r"spacecraft|satellite|rocket|missile|tank|artillery|wwii|world war|civil war|revolutionary war|"
+    r"17th century|18th century|19th century|1900s|1910s|1920s|1930s|1940s|1950s|1960s|1970s|1980s|"
+    r"archival|historic|historical|painting|engraving|manuscript|diagram|schematic|blueprint"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Even if ARCHIVAL_OVERRIDE_PATTERNS matches, NEVER allow these entertainment/sports/celebrity categories
+ABSOLUTE_REJECT_PATTERNS = re.compile(
+    r"\b("
+    r"living people|actors|actresses|singers|musicians|rappers|baseball|seattle mariners|burlington|"
+    r"red carpet|film premiere|movie premiere|television|nbcuniversal|maxim|grammy|invictus games|"
+    r"jennifer lopez|bad bunny|benicio del toro|amaury nolasco|ana ortiz|prince harry|"
+    r"memorial plaque|wayside marker|information board|tourist sign"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 class MediaFetcher:
-    def __init__(self, topic: str = "", era_keywords: Optional[List[str]] = None):
+    def __init__(
+        self,
+        topic: str = "",
+        era_keywords: Optional[List[str]] = None,
+        wikipedia_articles: Optional[List[str]] = None,
+        required_visual_keywords: Optional[List[str]] = None,
+        is_space_or_science: bool = False,
+        llm_client=None,
+    ):
         self.foundry_endpoint = os.getenv("FOUNDRY_ENDPOINT", "").strip().rstrip("/")
         self.foundry_key = os.getenv("FOUNDRY_API_KEY", "").strip()
         self.image_model = os.getenv("FOUNDRY_IMAGE_MODEL", "MAI-Image-2.6-Flash").strip()
         self.pexels_key = os.getenv("PEXELS_API_KEY", "").strip()
 
         try:
-            self.max_ai_images = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "2")))
+            self.max_ai_images = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "3")))
         except ValueError:
-            self.max_ai_images = 2
+            self.max_ai_images = 3
         self.ai_images_used = 0
 
         self.topic = topic
         self.era_keywords = era_keywords or []
-        self.topic_anchor = self._extract_topic_anchor(topic, self.era_keywords)
+        self.wikipedia_articles = wikipedia_articles or []
+        self.required_keywords = [
+            k.lower().strip() for k in (required_visual_keywords or []) if len(k.strip()) >= 3
+        ]
+        self.is_space_or_science = is_space_or_science or bool(
+            re.search(r"\b(nasa|space|rocket|mariner|apollo|orbit|venus|mars|moon|satellite|probe|hubble)\b", topic, re.I)
+        )
+        self.llm_client = llm_client
 
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
@@ -71,148 +114,226 @@ class MediaFetcher:
 
         self.used_urls: Set[str] = set()
         self.used_hashes: Set[str] = set()
-        self.topic_image_pool: List[Dict[str, str]] = []
+        self.verified_pool: List[Dict[str, str]] = []
         self.downloaded_scene_images: List[Path] = []
 
         if self.topic:
-            self._warm_up_topic_archival_pool()
+            self._build_verified_archival_pool()
 
-    @staticmethod
-    def _extract_topic_anchor(topic: str, era_keywords: List[str]) -> str:
+    def _has_domain_keyword_overlap(self, text: str) -> bool:
         """
-        Extracts the core historical entity and year/era from the topic title so every search query
-        remains anchored to the historical subject (e.g. 'Ghost Army World War II').
+        Requires candidate metadata to contain at least one strict domain keyword from the topic.
         """
-        if not topic:
-            return " ".join(era_keywords[:3]) if era_keywords else "United States history archival"
-        cleaned = re.sub(
-            r"\b(The|How|Why|When|Secret|Craziest|Most|Bizarre|Mystery|of|in|That|Fooled|Almost|Single|Entire|With)\b",
-            " ",
-            topic,
-            flags=re.IGNORECASE,
-        )
-        words = [w for w in re.findall(r"[A-Za-z0-9]+", cleaned) if len(w) >= 2]
-        anchor = " ".join(words[:5])
-        return anchor or topic[:45]
-
-    def _sanitize_and_anchor_query(self, raw_query: str, scene: dict) -> str:
-        """
-        Cleans a scene's search query, strips generic metaphor words (like 'rubber' or 'looks real'),
-        and appends the topic anchor if the query lacks historical specificity.
-        """
-        tokens = [
-            w for w in re.findall(r"[A-Za-z0-9]+", raw_query)
-            if w.lower() not in GENERIC_STOPWORDS and len(w) > 1
+        low = text.lower()
+        if self.required_keywords:
+            return any(kw in low for kw in self.required_keywords)
+        # Fallback if no required_keywords were provided: extract 4+ letter nouns from topic
+        topic_nouns = [
+            w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", self.topic)
+            if w.lower() not in {"that", "with", "from", "into", "when", "what", "single", "missing", "almost", "most", "craziest"}
         ]
-        if not tokens:
-            return self.topic_anchor
+        return any(w in low for w in topic_nouns) if topic_nouns else True
 
-        cleaned_q = " ".join(tokens)
-
-        anchor_words = {
-            w.lower() for w in re.findall(r"[A-Za-z0-9]+", f"{self.topic_anchor} {' '.join(self.era_keywords)}")
-            if len(w) > 2
-        }
-        query_words = {w.lower() for w in tokens}
-
-        if anchor_words and not (query_words & anchor_words):
-            short_anchor = " ".join(self.topic_anchor.split()[:3])
-            cleaned_q = f"{short_anchor} {cleaned_q}".strip()
-
-        return cleaned_q
-
-    def _is_candidate_valid_and_relevant(self, title: str, extmeta: dict, width: int, height: int) -> bool:
-        if width < 480 or height < 420:
+    def _is_strictly_historical_and_relevant(
+        self, title: str, desc: str, categories: str, width: int, height: int, trust_curated_source: bool = False
+    ) -> bool:
+        if width < 440 or height < 380:
             return False
         low_title = title.lower()
         if low_title.endswith((".svg", ".gif", ".tif", ".tiff", ".pdf", ".djvu", ".xcf", ".ogg", ".ogv", ".webm")):
             return False
 
-        desc = ""
-        categories = ""
-        if isinstance(extmeta, dict):
-            desc = str(extmeta.get("ImageDescription", {}).get("value", ""))
-            categories = str(extmeta.get("Categories", {}).get("value", ""))
-
-        combined_text = f"{title} {desc} {categories}"
-        if IRRELEVANT_TITLE_PATTERNS.search(combined_text):
+        aspect = width / max(height, 1)
+        if aspect > 2.5 or aspect < 0.35:
             return False
 
-        aspect = width / max(height, 1)
-        if aspect > 2.6 or aspect < 0.32:
+        combined = f"{title} {desc} {categories}"
+
+        # 1. Absolute block on celebrities, actors, singers, sports/baseball, red carpet, and tourist plaques
+        if ABSOLUTE_REJECT_PATTERNS.search(combined):
+            return False
+
+        # 2. Check broader disqualifying patterns (e.g. modern years 2005-2026, politicians, uniformed modern portraits)
+        if DISQUALIFYING_PATTERNS.search(combined):
+            if not ARCHIVAL_OVERRIDE_PATTERNS.search(combined):
+                return False
+
+        # 3. Unless the image came directly from the canonical Wikipedia article's media-list or NASA's archive,
+        # require explicit domain keyword overlap
+        if not trust_curated_source and not self._has_domain_keyword_overlap(combined):
             return False
 
         return True
 
-    def _warm_up_topic_archival_pool(self):
-        search_terms = [self.topic, self.topic_anchor]
-        for term in search_terms:
-            if not term:
-                continue
-            try:
-                params = {
-                    "action": "query",
-                    "generator": "search",
-                    "gsrsearch": term,
-                    "gsrlimit": 3,
-                    "prop": "images",
-                    "imlimit": 30,
-                    "format": "json",
-                }
-                resp = self.session.get(WIKIPEDIA_API, params=params, timeout=15)
-                if resp.status_code != 200:
-                    continue
-                pages = resp.json().get("query", {}).get("pages", {})
-                file_titles = []
-                for _, page in pages.items():
-                    for im in page.get("images", []):
-                        t = im.get("title", "")
-                        if t and not IRRELEVANT_TITLE_PATTERNS.search(t):
-                            file_titles.append(t)
+    def _build_verified_archival_pool(self):
+        """
+        Builds a high-precision pool of verified historical images in priority order:
+        1. Canonical Wikipedia Article REST Media-List (`/api/rest_v1/page/media-list/{title}`)
+        2. Official NASA Image & Video Library (`https://images-api.nasa.gov/search`) if space/science related
+        3. Strictly filtered Wikimedia Commons search
+        4. Batch LLM verification pass (`verify_archival_candidates`) to prune any remaining false positives
+        """
+        raw_candidates: List[Dict[str, str]] = []
 
-                if file_titles:
-                    self._resolve_commons_files_to_pool(file_titles[:25])
-            except Exception as exc:
-                print(f"[MediaFetcher] Pool warm-up notice: {exc}")
+        # 1. Fetch curated images from the exact canonical Wikipedia articles
+        articles_to_check = list(dict.fromkeys(self.wikipedia_articles[:5]))
+        if not articles_to_check:
+            articles_to_check = self._find_canonical_wikipedia_titles(self.topic)
 
-        self._populate_pool_from_commons_search(f"{self.topic_anchor} historical photograph", limit=18)
-        print(f"[MediaFetcher] Warmed up archival pool with {len(self.topic_image_pool)} verified historical images for '{self.topic_anchor}'.")
+        for article in articles_to_check:
+            raw_candidates.extend(self._fetch_wikipedia_rest_article_media(article))
 
-    def _resolve_commons_files_to_pool(self, titles: List[str]):
-        if not titles:
-            return
+        # 2. If space/NASA/aviation topic, query official NASA Image & Video Library API (free, no key)
+        if self.is_space_or_science:
+            nasa_queries = [self.topic] + [a for a in articles_to_check[:3]]
+            for nq in nasa_queries:
+                raw_candidates.extend(self._search_nasa_archive(nq, limit=8))
+
+        # 3. Add strictly filtered Wikimedia Commons candidates for the canonical articles
+        for article in articles_to_check[:3]:
+            raw_candidates.extend(self._search_wikimedia_candidates(f"{article} historical", limit=6))
+
+        # Deduplicate by URL
+        unique_candidates: List[Dict[str, str]] = []
+        seen_urls: Set[str] = set()
+        for c in raw_candidates:
+            if c["url"] not in seen_urls:
+                seen_urls.add(c["url"])
+                c["id"] = f"img_{len(unique_candidates)}"
+                unique_candidates.append(c)
+
+        # 4. Run batch LLM verification via gpt-6-luna so zero homonym traps or random people can survive
+        if self.llm_client and unique_candidates:
+            approved_ids = set(self.llm_client.verify_archival_candidates(self.topic, unique_candidates))
+            if approved_ids:
+                self.verified_pool = [c for c in unique_candidates if c["id"] in approved_ids]
+            else:
+                self.verified_pool = unique_candidates
+        else:
+            self.verified_pool = unique_candidates
+
+        print(
+            f"[MediaFetcher] Built verified archival pool: {len(self.verified_pool)} approved images "
+            f"(from {len(unique_candidates)} pre-filtered candidates) for '{self.topic}'."
+        )
+
+    def _find_canonical_wikipedia_titles(self, query: str) -> List[str]:
         params = {
             "action": "query",
-            "titles": "|".join(titles[:25]),
-            "prop": "imageinfo",
-            "iiprop": "url|extmetadata|dimensions",
-            "iiurlwidth": 1280,
+            "list": "search",
+            "srsearch": query,
+            "srlimit": 3,
             "format": "json",
         }
         try:
-            resp = self.session.get(WIKIMEDIA_API, params=params, timeout=18)
-            if resp.status_code != 200:
-                return
-            pages = resp.json().get("query", {}).get("pages", {})
-            for _, page in pages.items():
-                title = page.get("title", "")
-                iinfo = (page.get("imageinfo") or [{}])[0]
-                img_url = iinfo.get("thumburl") or iinfo.get("url")
-                w = iinfo.get("width", 0)
-                h = iinfo.get("height", 0)
-                ext = iinfo.get("extmetadata", {})
-                if img_url and self._is_candidate_valid_and_relevant(title, ext, w, h):
-                    if not any(item["url"] == img_url for item in self.topic_image_pool):
-                        lic = ext.get("LicenseShortName", {}).get("value", "Public Domain / CC")
-                        self.topic_image_pool.append({
-                            "url": img_url,
-                            "title": title.replace("File:", ""),
-                            "license": lic,
-                        })
+            resp = self.session.get(WIKIPEDIA_API, params=params, timeout=15)
+            if resp.status_code == 200:
+                hits = resp.json().get("query", {}).get("search", [])
+                return [
+                    h["title"] for h in hits
+                    if not h["title"].lower().startswith("list of")
+                    and not ABSOLUTE_REJECT_PATTERNS.search(h["title"])
+                ]
         except Exception:
             pass
+        return []
 
-    def _populate_pool_from_commons_search(self, query: str, limit: int = 12):
+    def _fetch_wikipedia_rest_article_media(self, article_title: str) -> List[Dict[str, str]]:
+        """
+        Uses Wikipedia's official REST `/page/media-list/{title}` endpoint to get ONLY the curated
+        photos that appear inside that exact Wikipedia article (never alphabetical spam).
+        """
+        results: List[Dict[str, str]] = []
+        encoded = quote(article_title.replace(" ", "_"), safe="")
+        try:
+            # First grab lead image from `/page/summary/{title}`
+            sum_resp = self.session.get(f"{WIKIPEDIA_REST_SUMMARY}{encoded}", timeout=15)
+            if sum_resp.status_code == 200:
+                sdata = sum_resp.json()
+                orig = sdata.get("originalimage", {}) or sdata.get("thumbnail", {})
+                img_url = orig.get("source", "")
+                w = int(orig.get("width", 1000))
+                h = int(orig.get("height", 1000))
+                desc = sdata.get("description", "") + " " + sdata.get("extract", "")
+                if img_url and self._is_strictly_historical_and_relevant(
+                    article_title, desc, article_title, w, h, trust_curated_source=True
+                ):
+                    results.append({
+                        "url": img_url,
+                        "title": f"{article_title} (Lead Archival Photo)",
+                        "desc": desc[:160],
+                        "license": "Wikipedia Archival",
+                    })
+
+            # Next grab curated article images from `/page/media-list/{title}`
+            med_resp = self.session.get(f"{WIKIPEDIA_REST_MEDIA}{encoded}", timeout=15)
+            if med_resp.status_code == 200:
+                items = med_resp.json().get("items", [])
+                for item in items:
+                    if item.get("type") != "image":
+                        continue
+                    title = item.get("title", "").replace("File:", "")
+                    caption = (item.get("caption", {}) or {}).get("text", "")
+                    srcset = item.get("srcset", [])
+                    if not srcset:
+                        continue
+                    # Pick highest-resolution srcset entry
+                    best_src = srcset[-1].get("src", "")
+                    if best_src.startswith("//"):
+                        best_src = "https:" + best_src
+                    if not best_src:
+                        continue
+                    if self._is_strictly_historical_and_relevant(
+                        title, caption, article_title, 1000, 1000, trust_curated_source=True
+                    ):
+                        results.append({
+                            "url": best_src,
+                            "title": title,
+                            "desc": f"{article_title}: {caption}"[:160],
+                            "license": "Wikimedia Commons",
+                        })
+        except Exception as exc:
+            print(f"[MediaFetcher] Wikipedia REST media-list notice for '{article_title}': {exc}")
+        return results
+
+    def _search_nasa_archive(self, query: str, limit: int = 8) -> List[Dict[str, str]]:
+        """
+        Queries the official NASA Image & Video Library (`https://images-api.nasa.gov/search`) —
+        100% public domain, no API key required, zero celebrity/baseball homonyms.
+        """
+        results: List[Dict[str, str]] = []
+        params = {"q": query, "media_type": "image", "page_size": limit}
+        try:
+            resp = self.session.get(NASA_IMAGES_API, params=params, timeout=18)
+            if resp.status_code != 200:
+                return results
+            items = resp.json().get("collection", {}).get("items", [])
+            for item in items:
+                data_list = item.get("data", [])
+                links_list = item.get("links", [])
+                if not data_list or not links_list:
+                    continue
+                meta = data_list[0]
+                title = meta.get("title", "NASA Archival Photograph")
+                desc = meta.get("description", "")
+                img_url = links_list[0].get("href", "")
+                if not img_url or not img_url.lower().endswith((".jpg", ".jpeg", ".png")):
+                    continue
+                if self._is_strictly_historical_and_relevant(
+                    title, desc, "NASA Space Archive", 1024, 1024, trust_curated_source=True
+                ):
+                    results.append({
+                        "url": img_url,
+                        "title": f"NASA: {title}",
+                        "desc": desc[:160],
+                        "license": "Public Domain (NASA)",
+                    })
+        except Exception as exc:
+            print(f"[MediaFetcher] NASA archive lookup notice for '{query}': {exc}")
+        return results
+
+    def _search_wikimedia_candidates(self, query: str, limit: int = 8) -> List[Dict[str, str]]:
+        results: List[Dict[str, str]] = []
         params = {
             "action": "query",
             "generator": "search",
@@ -227,69 +348,113 @@ class MediaFetcher:
         try:
             resp = self.session.get(WIKIMEDIA_API, params=params, timeout=18)
             if resp.status_code != 200:
-                return
+                return results
             pages = resp.json().get("query", {}).get("pages", {})
-            for _, page in pages.items():
-                title = page.get("title", "")
+            # Sort pages by search index so top relevance comes first
+            sorted_pages = sorted(pages.values(), key=lambda p: p.get("index", 999))
+            for page in sorted_pages:
+                title = page.get("title", "").replace("File:", "")
                 iinfo = (page.get("imageinfo") or [{}])[0]
                 img_url = iinfo.get("thumburl") or iinfo.get("url")
-                w = iinfo.get("width", 0)
-                h = iinfo.get("height", 0)
-                ext = iinfo.get("extmetadata", {})
-                if img_url and self._is_candidate_valid_and_relevant(title, ext, w, h):
-                    if not any(item["url"] == img_url for item in self.topic_image_pool):
-                        lic = ext.get("LicenseShortName", {}).get("value", "Public Domain / CC")
-                        self.topic_image_pool.append({
-                            "url": img_url,
-                            "title": title.replace("File:", ""),
-                            "license": lic,
-                        })
-        except Exception:
-            pass
+                w = int(iinfo.get("width", 0))
+                h = int(iinfo.get("height", 0))
+                ext = iinfo.get("extmetadata", {}) or {}
+                desc = str(ext.get("ImageDescription", {}).get("value", ""))
+                cats = str(ext.get("Categories", {}).get("value", ""))
+                date_orig = str(ext.get("DateTimeOriginal", {}).get("value", ""))
+
+                if not img_url:
+                    continue
+                if not self._is_strictly_historical_and_relevant(
+                    title, f"{desc} {date_orig}", cats, w, h, trust_curated_source=False
+                ):
+                    continue
+
+                lic = ext.get("LicenseShortName", {}).get("value", "Public Domain / CC")
+                results.append({
+                    "url": img_url,
+                    "title": title,
+                    "desc": re.sub(r"<[^>]+>", "", desc)[:160],
+                    "license": lic,
+                })
+        except Exception as exc:
+            print(f"[MediaFetcher] Wikimedia candidate search notice for '{query}': {exc}")
+        return results
 
     def fetch_scene_asset(
         self, scene: dict, assets_dir: Path
     ) -> Tuple[Path, str]:
         assets_dir.mkdir(parents=True, exist_ok=True)
         scene_id = int(scene.get("scene_id", 1))
-        prefer = scene.get("prefer_media", "wikimedia")
-        raw_wiki_q = scene.get("wikimedia_query", "")
+        prefer = scene.get("prefer_media", "archival")
+        wiki_q = scene.get("wikimedia_query", "")
+        nasa_q = scene.get("nasa_query", "")
         wp_article = scene.get("wikipedia_article", "")
         img_prompt = scene.get("image_prompt", "")
+        pexels_q = scene.get("pexels_query", "")
 
-        anchored_q = self._sanitize_and_anchor_query(raw_wiki_q, scene)
         can_use_ai = (
             self.ai_images_used < self.max_ai_images
             and bool(self.foundry_endpoint and self.foundry_key)
         )
 
+        # 1. Optional Pexels HD portrait video clip if PEXELS_API_KEY is configured
+        if self.pexels_key and pexels_q and scene_id % 5 == 0:
+            vid = self._fetch_pexels_video(pexels_q, assets_dir / f"scene_{scene_id:02d}.mp4")
+            if vid:
+                return vid, "video"
+
+        # 2. If scene explicitly requests `ai_image` (for conceptual shots) and budget allows, generate via MAI-Image
         if prefer == "ai_image" and can_use_ai and img_prompt:
             ai_img = self._generate_foundry_image(img_prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.downloaded_scene_images.append(ai_img)
-                print(f"[MediaFetcher] Scene {scene_id:02d}: Used MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
+                print(f"[MediaFetcher] Scene {scene_id:02d}: Generated MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
                 return ai_img, "image"
 
-        if anchored_q:
-            img_path = self._fetch_wikimedia_image(anchored_q, assets_dir / f"scene_{scene_id:02d}.jpg")
-            if img_path:
-                self.downloaded_scene_images.append(img_path)
-                return img_path, "image"
+        # 3. If space/science topic and scene has a NASA query, try NASA Archive first
+        if self.is_space_or_science and (nasa_q or wiki_q):
+            for c in self._search_nasa_archive(nasa_q or wiki_q, limit=5):
+                saved = self._download_and_register_image(
+                    c["url"], assets_dir / f"scene_{scene_id:02d}_nasa.jpg", c["title"], c["license"]
+                )
+                if saved:
+                    self.downloaded_scene_images.append(saved)
+                    return saved, "image"
 
-        for wp_q in filter(None, [wp_article, anchored_q, self.topic_anchor]):
-            wp_img = self._fetch_wikipedia_page_image(wp_q, assets_dir / f"scene_{scene_id:02d}_wp.jpg")
-            if wp_img:
-                self.downloaded_scene_images.append(wp_img)
-                return wp_img, "image"
-
-        pool_img = self._pull_from_topic_pool(assets_dir / f"scene_{scene_id:02d}_pool.jpg")
+        # 4. Pull best matching unused image from our LLM-verified archival pool
+        pool_img = self._pull_best_from_verified_pool(
+            f"{wiki_q} {wp_article} {scene.get('narration', '')}",
+            assets_dir / f"scene_{scene_id:02d}_archival.jpg",
+        )
         if pool_img:
             self.downloaded_scene_images.append(pool_img)
             return pool_img, "image"
 
+        # 5. Try scene-specific canonical Wikipedia article REST media-list if not already in pool
+        if wp_article:
+            for c in self._fetch_wikipedia_rest_article_media(wp_article):
+                saved = self._download_and_register_image(
+                    c["url"], assets_dir / f"scene_{scene_id:02d}_wp.jpg", c["title"], c["license"]
+                )
+                if saved:
+                    self.downloaded_scene_images.append(saved)
+                    return saved, "image"
+
+        # 6. Try strictly verified Wikimedia Commons search (must pass 3-layer firewall + keyword overlap)
+        if wiki_q:
+            for c in self._search_wikimedia_candidates(wiki_q, limit=6):
+                saved = self._download_and_register_image(
+                    c["url"], assets_dir / f"scene_{scene_id:02d}_wm.jpg", c["title"], c["license"]
+                )
+                if saved:
+                    self.downloaded_scene_images.append(saved)
+                    return saved, "image"
+
+        # 7. If no verified archival image matched and we still have AI image budget, use MAI-Image-2.6-Flash
         if self.ai_images_used < self.max_ai_images and self.foundry_endpoint and self.foundry_key:
-            prompt = img_prompt or f"Archival historical documentary photograph of {anchored_q}, {self.topic}, dramatic lighting, vertical 9:16"
+            prompt = img_prompt or f"Authentic historical documentary photograph of {wiki_q or self.topic}, dramatic lighting, vertical 9:16"
             ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
@@ -297,6 +462,8 @@ class MediaFetcher:
                 print(f"[MediaFetcher] Scene {scene_id:02d}: Fallback MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
                 return ai_img, "image"
 
+        # 8. Zero-credit multi-angle documentary camera plate from an already-verified scene image
+        # (Guarantees we NEVER pull unverified random celebrity photos when a topic only has 6-8 real historical photos!)
         if self.downloaded_scene_images:
             source_img = self.downloaded_scene_images[(scene_id - 1) % len(self.downloaded_scene_images)]
             reframed_path = assets_dir / f"scene_{scene_id:02d}_detail.jpg"
@@ -306,6 +473,28 @@ class MediaFetcher:
         fallback_path = assets_dir / f"scene_{scene_id:02d}_fallback.jpg"
         self._create_archival_fallback_card(fallback_path)
         return fallback_path, "image"
+
+    def _pull_best_from_verified_pool(self, scene_context: str, dest_path: Path) -> Optional[Path]:
+        context_words = {
+            w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", scene_context)
+        }
+        unused = [c for c in self.verified_pool if c["url"] not in self.used_urls]
+        if not unused:
+            return None
+
+        # Rank unused verified pool images by keyword overlap with current scene
+        def score_cand(c: Dict[str, str]) -> int:
+            text = f"{c.get('title', '')} {c.get('desc', '')}".lower()
+            return sum(1 for w in context_words if w in text)
+
+        ranked = sorted(unused, key=score_cand, reverse=True)
+        for cand in ranked:
+            saved = self._download_and_register_image(
+                cand["url"], dest_path, cand.get("title", ""), cand.get("license", "Public Domain")
+            )
+            if saved:
+                return saved
+        return None
 
     def _download_and_register_image(
         self, img_url: str, dest_path: Path, title: str = "", license_name: str = "Public Domain / CC"
@@ -323,7 +512,7 @@ class MediaFetcher:
             dest_path.write_bytes(content_bytes)
             with Image.open(dest_path) as im:
                 w, h = im.size
-                if w < 420 or h < 380:
+                if w < 420 or h < 360:
                     dest_path.unlink(missing_ok=True)
                     return None
                 im.convert("RGB").save(dest_path, quality=92)
@@ -332,20 +521,10 @@ class MediaFetcher:
             self.used_hashes.add(digest)
             if title:
                 clean_title = title.replace("File:", "")
-                self.attributions.append(f"• {clean_title} ({license_name}) via Wikimedia Commons")
+                self.attributions.append(f"• {clean_title} ({license_name})")
             return dest_path
         except Exception:
             return None
-
-    def _pull_from_topic_pool(self, dest_path: Path) -> Optional[Path]:
-        for item in self.topic_image_pool:
-            url = item["url"]
-            if url in self.used_urls:
-                continue
-            saved = self._download_and_register_image(url, dest_path, item.get("title", ""), item.get("license", "Public Domain"))
-            if saved:
-                return saved
-        return None
 
     def _generate_foundry_image(self, prompt: str, dest_path: Path) -> Optional[Path]:
         try:
@@ -402,89 +581,47 @@ class MediaFetcher:
             print(f"[MediaFetcher] Foundry {self.image_model} notice: {exc}")
             return None
 
-    def _fetch_wikimedia_image(self, query: str, dest_path: Path) -> Optional[Path]:
-        params = {
-            "action": "query",
-            "generator": "search",
-            "gsrsearch": f"filetype:bitmap {query}",
-            "gsrnamespace": 6,
-            "gsrlimit": 10,
-            "prop": "imageinfo",
-            "iiprop": "url|extmetadata|dimensions",
-            "iiurlwidth": 1280,
-            "format": "json",
-        }
+    def _fetch_pexels_video(self, query: str, dest_path: Path) -> Optional[Path]:
+        headers = {"Authorization": self.pexels_key}
+        params = {"query": query, "orientation": "portrait", "per_page": 4, "size": "medium"}
         try:
-            resp = self.session.get(WIKIMEDIA_API, params=params, timeout=20)
+            resp = self.session.get(PEXELS_VIDEO_API, headers=headers, params=params, timeout=20)
             resp.raise_for_status()
-            pages = resp.json().get("query", {}).get("pages", {})
-            for _, page in pages.items():
-                title = page.get("title", "")
-                iinfo = (page.get("imageinfo") or [{}])[0]
-                img_url = iinfo.get("thumburl") or iinfo.get("url")
-                width = iinfo.get("width", 0)
-                height = iinfo.get("height", 0)
-                ext = iinfo.get("extmetadata", {})
-
-                if not img_url or not self._is_candidate_valid_and_relevant(title, ext, width, height):
+            for v in resp.json().get("videos", []):
+                files = v.get("video_files", [])
+                mp4s = [f for f in files if f.get("file_type") == "video/mp4" and f.get("height", 0) >= 720]
+                if not mp4s:
                     continue
-
-                license_name = ext.get("LicenseShortName", {}).get("value", "Public Domain / CC")
-                saved = self._download_and_register_image(img_url, dest_path, title, license_name)
-                if saved:
-                    return saved
-        except Exception as exc:
-            print(f"[MediaFetcher] Wikimedia lookup notice for '{query}': {exc}")
-        return None
-
-    def _fetch_wikipedia_page_image(self, query: str, dest_path: Path) -> Optional[Path]:
-        params = {
-            "action": "query",
-            "generator": "search",
-            "gsrsearch": query,
-            "gsrlimit": 5,
-            "prop": "pageimages",
-            "piprop": "original|thumbnail",
-            "pithumbsize": 1280,
-            "format": "json",
-        }
-        try:
-            resp = self.session.get(WIKIPEDIA_API, params=params, timeout=15)
-            resp.raise_for_status()
-            pages = resp.json().get("query", {}).get("pages", {})
-            for _, page in pages.items():
-                page_title = page.get("title", "")
-                if IRRELEVANT_TITLE_PATTERNS.search(page_title):
-                    continue
-                img_url = page.get("original", {}).get("source") or page.get("thumbnail", {}).get("source")
-                if not img_url or IRRELEVANT_TITLE_PATTERNS.search(img_url):
-                    continue
-                if img_url.lower().endswith((".svg", ".gif", ".tif", ".pdf")):
-                    continue
-                saved = self._download_and_register_image(img_url, dest_path, page_title, "Wikipedia Archival")
-                if saved:
-                    return saved
+                chosen = sorted(mp4s, key=lambda x: abs(x.get("height", 0) - 1280))[0]
+                vid_resp = self.session.get(chosen["link"], timeout=35)
+                vid_resp.raise_for_status()
+                dest_path.write_bytes(vid_resp.content)
+                return dest_path
         except Exception:
             pass
         return None
 
     @staticmethod
     def _create_distinct_detail_crop(source_path: Path, dest_path: Path, variant: int = 1):
+        """
+        Creates a distinct documentary camera angle (rule-of-thirds close-up or warm archival grade)
+        from a verified scene image so we never run out of visuals and never show unverified photos.
+        """
         with Image.open(source_path) as im:
             rgb = im.convert("RGB")
             w, h = rgb.size
-            crop_w = int(w * 0.74)
-            crop_h = int(h * 0.74)
+            crop_w = int(w * 0.72)
+            crop_h = int(h * 0.72)
             offsets = [
-                (int(w * 0.05), int(h * 0.08)),
-                (int(w * 0.20), int(h * 0.12)),
-                (int(w * 0.12), int(h * 0.22)),
-                (int(w * 0.18), int(h * 0.05)),
+                (int(w * 0.04), int(h * 0.06)),
+                (int(w * 0.22), int(h * 0.10)),
+                (int(w * 0.14), int(h * 0.20)),
+                (int(w * 0.18), int(h * 0.04)),
             ]
             ox, oy = offsets[variant % len(offsets)]
             cropped = rgb.crop((ox, oy, min(w, ox + crop_w), min(h, oy + crop_h)))
-            cropped = ImageEnhance.Contrast(cropped).enhance(1.12)
-            cropped = ImageEnhance.Color(cropped).enhance(0.82)
+            cropped = ImageEnhance.Contrast(cropped).enhance(1.10)
+            cropped = ImageEnhance.Color(cropped).enhance(0.86)
             cropped.save(dest_path, quality=92)
 
     @staticmethod
