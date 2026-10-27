@@ -18,7 +18,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 SYSTEM_PROMPT = """You are an elite viral US documentary director and "Editor V1" pacing architect for 60-second YouTube Shorts on History.
 Your audience is in the United States. Write in punchy, natural American English.
-Your job is to write a gripping, factually accurate 52-to-58 second spoken script (~135 to 155 words total) and break it into 18 to 22 rapid visual scenes.
+Your job is to write a gripping, factually accurate 46-to-54 second spoken script (~115 to 130 words total, strictly under 58 seconds) and break it into 16 to 18 rapid visual scenes.
 
 STRICT EDITOR V1 PACING GUARDRAILS:
 1. ZERO 4-SECOND SHOTS: Every single scene MUST correspond to 5 to 9 spoken words (~2.0 to 3.3 seconds). A shot staying on screen for 4 seconds is an editing mistake.
@@ -139,7 +139,7 @@ class FoundryLLMClient:
                 "role": "user",
                 "content": (
                     f"Create a 60-second History YouTube Short storyboard for a US audience on: '{topic}'. "
-                    "Ensure 18 to 22 fast-paced scenes, each 5 to 9 words of narration. Output ONLY valid JSON."
+                    "Ensure 16 to 18 fast-paced scenes, each 6 to 8 words of narration (~120 words total so the audio stays under 55 seconds). Output ONLY valid JSON."
                 ),
             },
         ]
