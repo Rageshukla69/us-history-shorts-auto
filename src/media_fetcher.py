@@ -87,48 +87,55 @@ class MediaFetcher:
 
     def _generate_foundry_image(self, prompt: str, dest_path: Path) -> Optional[Path]:
         """
-        Calls Microsoft Foundry `MAI-Image-2.6-Flash` using `FOUNDRY_ENDPOINT` + `FOUNDRY_API_KEY`.
-        Automatically negotiates URL paths across Foundry `/models`, `/openai/deployments`, and `/v1`.
+        Calls Microsoft Foundry `MAI-Image-2.6-Flash` using the exact `/mai/v1/images/generations` route
+        from your Bharat Rahasya bot (plus `/openai/v1/images/generations` and `/openai/deployments` fallbacks).
         """
         try:
-            base = self.foundry_endpoint
-            root = base.split("/models")[0].split("/openai")[0].split("/images")[0].rstrip("/")
-            urls = []
-            if "/images/generations" in base:
-                urls.append(base)
-            urls.extend([
-                f"{root}/openai/deployments/{self.image_model}/images/generations?api-version=2024-05-01-preview",
-                f"{root}/models/images/generations?api-version=2024-05-01-preview",
-                f"{root}/openai/v1/images/generations",
-                f"{root}/v1/images/generations",
-                f"{root}/images/generations?api-version=2024-05-01-preview",
-            ])
-            urls = list(dict.fromkeys(urls))
+            from urllib.parse import urlparse
+            parsed = urlparse(self.foundry_endpoint)
+            if parsed.scheme and parsed.netloc:
+                resource_root = f"{parsed.scheme}://{parsed.netloc}"
+            else:
+                resource_root = self.foundry_endpoint.split("/api/projects")[0].split("/openai")[0].split("/models")[0].rstrip("/")
 
             headers = {
                 "Content-Type": "application/json",
                 "api-key": self.foundry_key,
                 "Authorization": f"Bearer {self.foundry_key}",
             }
-            clean_prompt = f"{prompt}. Clean historical composition, no text, no watermarks, no labels."
+            clean_prompt = f"{prompt}, epic cinematic historical documentary realism, dramatic lighting, 35mm archival film look, vertical 9:16 composition, no text, no watermarks"
 
-            for url in urls:
-                for size in ("1024x1792", "1024x1024"):
-                    payload = {"model": self.image_model, "prompt": clean_prompt, "n": 1, "size": size}
-                    resp = requests.post(url, headers=headers, json=payload, timeout=45)
-                    if resp.status_code == 200:
-                        data = resp.json().get("data", [{}])[0]
-                        if "b64_json" in data:
-                            dest_path.write_bytes(base64.b64decode(data["b64_json"]))
-                        elif "url" in data:
-                            img_r = self.session.get(data["url"], timeout=30)
-                            img_r.raise_for_status()
-                            dest_path.write_bytes(img_r.content)
-                        else:
-                            continue
-                        with Image.open(dest_path) as im:
-                            im.convert("RGB").save(dest_path, quality=92)
-                        return dest_path
+            route_attempts = [
+                (
+                    f"{resource_root}/mai/v1/images/generations",
+                    {"model": self.image_model, "prompt": clean_prompt, "width": 768, "height": 1344},
+                ),
+                (
+                    f"{resource_root}/openai/v1/images/generations",
+                    {"model": self.image_model, "prompt": clean_prompt, "n": 1, "size": "1024x1792"},
+                ),
+                (
+                    f"{resource_root}/openai/deployments/{self.image_model}/images/generations?api-version=2025-04-01-preview",
+                    {"prompt": clean_prompt, "n": 1, "size": "1024x1792"},
+                ),
+            ]
+
+            for url, payload in route_attempts:
+                resp = requests.post(url, headers=headers, json=payload, timeout=55)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("data", [])
+                    if items and "b64_json" in items[0]:
+                        dest_path.write_bytes(base64.b64decode(items[0]["b64_json"]))
+                    elif items and "url" in items[0]:
+                        img_r = self.session.get(items[0]["url"], timeout=35)
+                        img_r.raise_for_status()
+                        dest_path.write_bytes(img_r.content)
+                    else:
+                        continue
+                    with Image.open(dest_path) as im:
+                        im.convert("RGB").save(dest_path, quality=92)
+                    return dest_path
             return None
         except Exception as exc:
             print(f"[MediaFetcher] Foundry {self.image_model} notice: {exc}")
