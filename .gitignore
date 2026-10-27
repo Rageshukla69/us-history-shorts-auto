@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+output/
+temp/
+assets/cache/
+*.mp4
+*.mp3
+*.wav
+*.ass
