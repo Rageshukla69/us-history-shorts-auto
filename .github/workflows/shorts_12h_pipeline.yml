@@ -45,7 +45,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Generate Audio SFX Cues
+      - name: Synthesize Mysterious Documentary Background Score
         run: |
           python src/sfx_generator.py
 
@@ -55,10 +55,12 @@ jobs:
           AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
           AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION || 'centralindia' }}
           AZURE_TTS_VOICE: ${{ secrets.AZURE_TTS_VOICE || 'en-US-BrianMultilingualNeural' }}
-          BG_MUSIC_VOLUME: ${{ secrets.BG_MUSIC_VOLUME || '0.25' }}
+          BG_MUSIC_VOLUME: ${{ secrets.BG_MUSIC_VOLUME || '0.28' }}
           FOUNDRY_API_KEY: ${{ secrets.FOUNDRY_API_KEY }}
           FOUNDRY_ENDPOINT: ${{ secrets.FOUNDRY_ENDPOINT }}
           FOUNDRY_IMAGE_MODEL: ${{ secrets.FOUNDRY_IMAGE_MODEL || 'MAI-Image-2.6-Flash' }}
+          # Strict cap on MAI-Image-2.6-Flash calls per Short to save your Foundry credits (set to 0, 1, or 2):
+          MAX_AI_IMAGES_PER_SHORT: ${{ secrets.MAX_AI_IMAGES_PER_SHORT || '2' }}
           FOUNDRY_TEXT_API_KEY: ${{ secrets.FOUNDRY_TEXT_API_KEY }}
           FOUNDRY_TEXT_ENDPOINT: ${{ secrets.FOUNDRY_TEXT_ENDPOINT }}
           FOUNDRY_TEXT_MODEL: ${{ secrets.FOUNDRY_TEXT_MODEL || 'gpt-6-luna' }}
