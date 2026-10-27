@@ -3,8 +3,8 @@ name: Automated US History Shorts (Every 12 Hours)
 on:
   # SAFE MODE: The 12-hour automatic schedule is paused below so it never spams YouTube while you test!
   # Once you verify a test video, simply remove the '#' on the two lines below to re-enable auto-runs:
-  # schedule:
-  #   - cron: '0 */12 * * *'
+   schedule:
+     - cron: '0 */12 * * *'
   workflow_dispatch:
     inputs:
       custom_topic:
