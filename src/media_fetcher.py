@@ -88,48 +88,48 @@ class MediaFetcher:
     def _generate_foundry_image(self, prompt: str, dest_path: Path) -> Optional[Path]:
         """
         Calls Microsoft Foundry `MAI-Image-2.6-Flash` using `FOUNDRY_ENDPOINT` + `FOUNDRY_API_KEY`.
+        Automatically negotiates URL paths across Foundry `/models`, `/openai/deployments`, and `/v1`.
         """
         try:
-            url = self.foundry_endpoint
-            if "/images/generations" not in url:
-                if "openai.azure.com" in url and "/deployments/" not in url:
-                    url = f"{url}/openai/deployments/{self.image_model}/images/generations?api-version=2024-05-01-preview"
-                else:
-                    url = f"{url}/images/generations"
-                    if "services.ai.azure.com" in url and "api-version=" not in url:
-                        url += "?api-version=2024-05-01-preview"
+            base = self.foundry_endpoint
+            root = base.split("/models")[0].split("/openai")[0].split("/images")[0].rstrip("/")
+            urls = []
+            if "/images/generations" in base:
+                urls.append(base)
+            urls.extend([
+                f"{root}/openai/deployments/{self.image_model}/images/generations?api-version=2024-05-01-preview",
+                f"{root}/models/images/generations?api-version=2024-05-01-preview",
+                f"{root}/openai/v1/images/generations",
+                f"{root}/v1/images/generations",
+                f"{root}/images/generations?api-version=2024-05-01-preview",
+            ])
+            urls = list(dict.fromkeys(urls))
 
             headers = {
                 "Content-Type": "application/json",
                 "api-key": self.foundry_key,
                 "Authorization": f"Bearer {self.foundry_key}",
             }
-            payload = {
-                "model": self.image_model,
-                "prompt": f"{prompt}. Clean historical composition, no text, no watermarks, no labels.",
-                "n": 1,
-                "size": "1024x1792",
-            }
-            resp = requests.post(url, headers=headers, json=payload, timeout=45)
-            if resp.status_code >= 400:
-                # Retry with standard 1024x1024 if endpoint restricts aspect ratio string
-                payload["size"] = "1024x1024"
-                resp = requests.post(url, headers=headers, json=payload, timeout=45)
-            resp.raise_for_status()
+            clean_prompt = f"{prompt}. Clean historical composition, no text, no watermarks, no labels."
 
-            data = resp.json().get("data", [{}])[0]
-            if "b64_json" in data:
-                dest_path.write_bytes(base64.b64decode(data["b64_json"]))
-            elif "url" in data:
-                img_r = self.session.get(data["url"], timeout=30)
-                img_r.raise_for_status()
-                dest_path.write_bytes(img_r.content)
-            else:
-                return None
-
-            with Image.open(dest_path) as im:
-                im.convert("RGB").save(dest_path, quality=92)
-            return dest_path
+            for url in urls:
+                for size in ("1024x1792", "1024x1024"):
+                    payload = {"model": self.image_model, "prompt": clean_prompt, "n": 1, "size": size}
+                    resp = requests.post(url, headers=headers, json=payload, timeout=45)
+                    if resp.status_code == 200:
+                        data = resp.json().get("data", [{}])[0]
+                        if "b64_json" in data:
+                            dest_path.write_bytes(base64.b64decode(data["b64_json"]))
+                        elif "url" in data:
+                            img_r = self.session.get(data["url"], timeout=30)
+                            img_r.raise_for_status()
+                            dest_path.write_bytes(img_r.content)
+                        else:
+                            continue
+                        with Image.open(dest_path) as im:
+                            im.convert("RGB").save(dest_path, quality=92)
+                        return dest_path
+            return None
         except Exception as exc:
             print(f"[MediaFetcher] Foundry {self.image_model} notice: {exc}")
             return None
