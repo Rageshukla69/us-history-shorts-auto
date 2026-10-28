@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       custom_topic:
-        description: 'Optional custom history topic (leave blank to auto-pick next topic)'
+        description: 'Optional custom history topic (leave blank to auto-pick next unused topic)'
         required: false
         default: ''
       dry_run:
@@ -56,7 +56,6 @@ jobs:
 
       - name: Run End-to-End History Short Pipeline
         env:
-          # Exact match with your existing Heroku Config Vars:
           AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
           AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION || 'centralindia' }}
           AZURE_TTS_VOICE: ${{ secrets.AZURE_TTS_VOICE || 'en-US-BrianMultilingualNeural' }}
@@ -65,7 +64,6 @@ jobs:
           FOUNDRY_API_KEY: ${{ secrets.FOUNDRY_API_KEY }}
           FOUNDRY_ENDPOINT: ${{ secrets.FOUNDRY_ENDPOINT }}
           FOUNDRY_IMAGE_MODEL: ${{ secrets.FOUNDRY_IMAGE_MODEL || 'MAI-Image-2.6-Flash' }}
-          # Strict cap on MAI-Image-2.6-Flash calls per Short to save your Foundry credits (default 3):
           MAX_AI_IMAGES_PER_SHORT: ${{ secrets.MAX_AI_IMAGES_PER_SHORT || '3' }}
           FOUNDRY_TEXT_API_KEY: ${{ secrets.FOUNDRY_TEXT_API_KEY }}
           FOUNDRY_TEXT_ENDPOINT: ${{ secrets.FOUNDRY_TEXT_ENDPOINT }}
@@ -73,7 +71,6 @@ jobs:
           SHORTS_PER_DAY: ${{ secrets.SHORTS_PER_DAY || '2' }}
           VOICE_SPEED_PERCENT: ${{ secrets.VOICE_SPEED_PERCENT || '3' }}
           YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
-          # Optional Pexels key
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           CUSTOM_TOPIC: ${{ github.event.inputs.custom_topic }}
@@ -83,7 +80,7 @@ jobs:
 
       - name: Upload Rendered Short as Workflow Artifact (Preview / Backup)
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && hashFiles('output/final_short.mp4') != ''
         with:
           name: rendered-short-${{ github.run_id }}
           path: |
@@ -92,10 +89,16 @@ jobs:
             output/metadata.json
           retention-days: 7
 
-      - name: Commit Updated Topic Queue & History State
-        if: success() && github.event.inputs.dry_run != 'true'
+      - name: Commit Updated Topic Queue & History State (Backup Sync)
+        if: always() && github.event.inputs.dry_run != 'true'
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "History Shorts Auto-Bot"
           git add data/used_topics.json data/upload_history.json data/topics_seed.json
-          git diff --staged --quiet || (git commit -m "chore: record completed history short" && git pull --rebase --autostash origin main && git push)
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: record completed history short"
+          fi
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && break
+            sleep 2
+          done
