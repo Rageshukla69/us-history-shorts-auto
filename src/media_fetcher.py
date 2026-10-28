@@ -1,20 +1,19 @@
 """
-Multi-Source Archival & Credit-Saving Visual Engine (v4.0 — ShortGPT & MoneyPrinterTurbo Inspired):
-1. Wikipedia Official REST Media-List API (`https://en.wikipedia.org/api/rest_v1/page/media-list/{title}`):
+Multi-Source Archival & Credit-Saving Visual Engine (v4.2 — Strict 9:16 Full-Bleed Edition):
+1. Strict 9:16 (`1080x1920`) Normalization (`normalize_image_to_9_16`):
+   - Every single downloaded archival photo (Wikipedia REST, NASA, Wikimedia Commons) and every AI image
+     (`MAI-Image-2.6-Flash`) is immediately cropped and normalized to exact `1080x1920` (`9:16`) vertical
+     dimensions using subject-aware edge-energy salience detection and upper-third portrait bias (`0.22`),
+     so images NEVER change dimensions mid-video!
+   - Wide horizontal panoramic strips (`aspect > 1.60`) are rejected at the candidate stage, and vertical/portrait
+     archival photographs (`aspect <= 1.05`) receive a `+3` priority score bonus.
+2. Wikipedia Official REST Media-List API (`https://en.wikipedia.org/api/rest_v1/page/media-list/{title}`):
    Fetches ONLY the curated historical photographs actually embedded inside the exact canonical Wikipedia
-   articles for the topic (completely eliminating the old `prop=images` alphabetical list bug that pulled
-   Bad Bunny, Benicio del Toro, Ana Ortiz, and Amaury Nolasco).
-2. Official NASA Image & Video Library API (`https://images-api.nasa.gov/search`):
+   articles for the topic.
+3. Official NASA Image & Video Library API (`https://images-api.nasa.gov/search`):
    100% FREE, requires ZERO API keys, and provides authentic archival NASA photographs for any space,
    rocket, Cold War, or science topic (like Mariner 1, Apollo, Voyager, Hubble).
-3. 3-Layer Historical Verification Firewall:
-   - Layer A: Hard Category & EXIF/Date Blacklist (rejects `Living people`, `Actors`, `Singers`, `Rappers`,
-     `Baseball`, `Sports`, `Film premieres`, `Red carpet`, `NBCUniversal`, `Maxim`, `2000s/2010s/2020s` portraits).
-   - Layer B: Mandatory Domain Keyword Overlap (`required_visual_keywords`).
-   - Layer C: LLM Batch Candidate Verification (`llm_client.verify_archival_candidates`) via `gpt-6-luna`
-     (a single text call that rejects any homonym traps like "Atlas" the Jennifer Lopez movie or "Mariners" baseball).
-4. Strict MAI-Image Credit Cap (`MAX_AI_IMAGES_PER_SHORT`, default `3`):
-   Never exceeds your AI image credit budget, and never falls back to unverified Wikimedia searches.
+4. 3-Layer Historical Verification Firewall + Strict MAI-Image Credit Cap (`MAX_AI_IMAGES_PER_SHORT`, default `3`).
 """
 import base64
 import hashlib
@@ -32,7 +31,7 @@ WIKIPEDIA_REST_MEDIA = "https://en.wikipedia.org/api/rest_v1/page/media-list/"
 WIKIPEDIA_REST_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 NASA_IMAGES_API = "https://images-api.nasa.gov/search"
 PEXELS_VIDEO_API = "https://api.pexels.com/videos/search"
-USER_AGENT = "USHistoryShortsBot/4.0 (https://github.com/education/students)"
+USER_AGENT = "USHistoryShortsBot/4.2 (https://github.com/education/students)"
 
 # Comprehensive blacklist blocking modern celebrities, actors, singers, athletes, press events, and signage
 DISQUALIFYING_PATTERNS = re.compile(
@@ -77,6 +76,9 @@ ABSOLUTE_REJECT_PATTERNS = re.compile(
 
 
 class MediaFetcher:
+    TARGET_W = 1080
+    TARGET_H = 1920
+
     def __init__(
         self,
         topic: str = "",
@@ -120,6 +122,63 @@ class MediaFetcher:
         if self.topic:
             self._build_verified_archival_pool()
 
+    @classmethod
+    def normalize_image_to_9_16(cls, img: Image.Image) -> Image.Image:
+        """
+        Normalizes ANY input image (portrait, square, or horizontal) into a crisp, full-bleed
+        1080x1920 (9:16) vertical image using subject-aware edge-energy salience detection
+        for horizontal crops and upper-third framing bias (`0.22`) for vertical crops.
+        Guarantees every scene image has the exact same 1080x1920 9:16 dimensions.
+        """
+        rgb = img.convert("RGB")
+        w, h = rgb.size
+        target_w, target_h = cls.TARGET_W, cls.TARGET_H
+
+        scale = max(target_w / max(w, 1), target_h / max(h, 1))
+        new_w = max(target_w, int(round(w * scale)))
+        new_h = max(target_h, int(round(h * scale)))
+        resized = rgb.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        if new_w > target_w:
+            # Horizontal excess: find the 9:16 vertical window with highest visual detail/salience
+            gray_edges = resized.convert("L").filter(ImageFilter.FIND_EDGES)
+            small_w, small_h = max(1, new_w // 8), max(1, new_h // 8)
+            edge_small = gray_edges.resize((small_w, small_h), Image.Resampling.BILINEAR)
+            win_w = max(1, target_w // 8)
+            px = edge_small.load()
+
+            col_energy = [0.0] * small_w
+            for x in range(small_w):
+                # Weight the upper-middle vertical band (15% to 75% height) highest
+                y_start = int(small_h * 0.15)
+                y_end = max(y_start + 1, int(small_h * 0.75))
+                col_energy[x] = sum(px[x, y] for y in range(y_start, y_end))
+
+            best_x_small = (small_w - win_w) // 2
+            best_score = -1.0
+            center_x_small = (small_w - win_w) / 2.0
+            for x0 in range(0, max(1, small_w - win_w + 1)):
+                energy = sum(col_energy[x0 : x0 + win_w])
+                # Slight center-prior so we don't hug extreme edges unless subject is strongly there
+                dist_penalty = 1.0 - 0.18 * abs(x0 - center_x_small) / max(1.0, center_x_small)
+                score = energy * dist_penalty
+                if score > best_score:
+                    best_score = score
+                    best_x_small = x0
+
+            left = min(max(0, int(best_x_small * 8)), new_w - target_w)
+        else:
+            left = 0
+
+        if new_h > target_h:
+            # Vertical excess: bias toward upper-third (0.22) so faces, crowns, and rocket noses are never cut off
+            top = min(max(0, int((new_h - target_h) * 0.22)), new_h - target_h)
+        else:
+            top = 0
+
+        cropped = resized.crop((left, top, left + target_w, top + target_h))
+        return ImageEnhance.Sharpness(cropped).enhance(1.08)
+
     def _has_domain_keyword_overlap(self, text: str) -> bool:
         """
         Requires candidate metadata to contain at least one strict domain keyword from the topic.
@@ -127,7 +186,6 @@ class MediaFetcher:
         low = text.lower()
         if self.required_keywords:
             return any(kw in low for kw in self.required_keywords)
-        # Fallback if no required_keywords were provided: extract 4+ letter nouns from topic
         topic_nouns = [
             w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", self.topic)
             if w.lower() not in {"that", "with", "from", "into", "when", "what", "single", "missing", "almost", "most", "craziest"}
@@ -137,45 +195,34 @@ class MediaFetcher:
     def _is_strictly_historical_and_relevant(
         self, title: str, desc: str, categories: str, width: int, height: int, trust_curated_source: bool = False
     ) -> bool:
-        if width < 440 or height < 380:
+        if width < 440 or height < 440:
             return False
         low_title = title.lower()
         if low_title.endswith((".svg", ".gif", ".tif", ".tiff", ".pdf", ".djvu", ".xcf", ".ogg", ".ogv", ".webm")):
             return False
 
+        # Reject wide horizontal banners/panoramas (`aspect > 1.60`) so every image crops cleanly to 9:16
         aspect = width / max(height, 1)
-        if aspect > 2.5 or aspect < 0.35:
+        if aspect > 1.60 or aspect < 0.35:
             return False
 
         combined = f"{title} {desc} {categories}"
 
-        # 1. Absolute block on celebrities, actors, singers, sports/baseball, red carpet, and tourist plaques
         if ABSOLUTE_REJECT_PATTERNS.search(combined):
             return False
 
-        # 2. Check broader disqualifying patterns (e.g. modern years 2005-2026, politicians, uniformed modern portraits)
         if DISQUALIFYING_PATTERNS.search(combined):
             if not ARCHIVAL_OVERRIDE_PATTERNS.search(combined):
                 return False
 
-        # 3. Unless the image came directly from the canonical Wikipedia article's media-list or NASA's archive,
-        # require explicit domain keyword overlap
         if not trust_curated_source and not self._has_domain_keyword_overlap(combined):
             return False
 
         return True
 
     def _build_verified_archival_pool(self):
-        """
-        Builds a high-precision pool of verified historical images in priority order:
-        1. Canonical Wikipedia Article REST Media-List (`/api/rest_v1/page/media-list/{title}`)
-        2. Official NASA Image & Video Library (`https://images-api.nasa.gov/search`) if space/science related
-        3. Strictly filtered Wikimedia Commons search
-        4. Batch LLM verification pass (`verify_archival_candidates`) to prune any remaining false positives
-        """
         raw_candidates: List[Dict[str, str]] = []
 
-        # 1. Fetch curated images from the exact canonical Wikipedia articles
         articles_to_check = list(dict.fromkeys(self.wikipedia_articles[:5]))
         if not articles_to_check:
             articles_to_check = self._find_canonical_wikipedia_titles(self.topic)
@@ -183,17 +230,14 @@ class MediaFetcher:
         for article in articles_to_check:
             raw_candidates.extend(self._fetch_wikipedia_rest_article_media(article))
 
-        # 2. If space/NASA/aviation topic, query official NASA Image & Video Library API (free, no key)
         if self.is_space_or_science:
             nasa_queries = [self.topic] + [a for a in articles_to_check[:3]]
             for nq in nasa_queries:
                 raw_candidates.extend(self._search_nasa_archive(nq, limit=8))
 
-        # 3. Add strictly filtered Wikimedia Commons candidates for the canonical articles
         for article in articles_to_check[:3]:
             raw_candidates.extend(self._search_wikimedia_candidates(f"{article} historical", limit=6))
 
-        # Deduplicate by URL
         unique_candidates: List[Dict[str, str]] = []
         seen_urls: Set[str] = set()
         for c in raw_candidates:
@@ -202,7 +246,6 @@ class MediaFetcher:
                 c["id"] = f"img_{len(unique_candidates)}"
                 unique_candidates.append(c)
 
-        # 4. Run batch LLM verification via gpt-6-luna so zero homonym traps or random people can survive
         if self.llm_client and unique_candidates:
             approved_ids = set(self.llm_client.verify_archival_candidates(self.topic, unique_candidates))
             if approved_ids:
@@ -213,7 +256,7 @@ class MediaFetcher:
             self.verified_pool = unique_candidates
 
         print(
-            f"[MediaFetcher] Built verified archival pool: {len(self.verified_pool)} approved images "
+            f"[MediaFetcher] Built verified archival pool: {len(self.verified_pool)} approved 9:16-ready images "
             f"(from {len(unique_candidates)} pre-filtered candidates) for '{self.topic}'."
         )
 
@@ -239,14 +282,9 @@ class MediaFetcher:
         return []
 
     def _fetch_wikipedia_rest_article_media(self, article_title: str) -> List[Dict[str, str]]:
-        """
-        Uses Wikipedia's official REST `/page/media-list/{title}` endpoint to get ONLY the curated
-        photos that appear inside that exact Wikipedia article (never alphabetical spam).
-        """
         results: List[Dict[str, str]] = []
         encoded = quote(article_title.replace(" ", "_"), safe="")
         try:
-            # First grab lead image from `/page/summary/{title}`
             sum_resp = self.session.get(f"{WIKIPEDIA_REST_SUMMARY}{encoded}", timeout=15)
             if sum_resp.status_code == 200:
                 sdata = sum_resp.json()
@@ -263,9 +301,9 @@ class MediaFetcher:
                         "title": f"{article_title} (Lead Archival Photo)",
                         "desc": desc[:160],
                         "license": "Wikipedia Archival",
+                        "is_portrait": "1" if w <= h * 1.05 else "0",
                     })
 
-            # Next grab curated article images from `/page/media-list/{title}`
             med_resp = self.session.get(f"{WIKIPEDIA_REST_MEDIA}{encoded}", timeout=15)
             if med_resp.status_code == 200:
                 items = med_resp.json().get("items", [])
@@ -277,7 +315,6 @@ class MediaFetcher:
                     srcset = item.get("srcset", [])
                     if not srcset:
                         continue
-                    # Pick highest-resolution srcset entry
                     best_src = srcset[-1].get("src", "")
                     if best_src.startswith("//"):
                         best_src = "https:" + best_src
@@ -291,16 +328,13 @@ class MediaFetcher:
                             "title": title,
                             "desc": f"{article_title}: {caption}"[:160],
                             "license": "Wikimedia Commons",
+                            "is_portrait": "1",
                         })
         except Exception as exc:
             print(f"[MediaFetcher] Wikipedia REST media-list notice for '{article_title}': {exc}")
         return results
 
     def _search_nasa_archive(self, query: str, limit: int = 8) -> List[Dict[str, str]]:
-        """
-        Queries the official NASA Image & Video Library (`https://images-api.nasa.gov/search`) —
-        100% public domain, no API key required, zero celebrity/baseball homonyms.
-        """
         results: List[Dict[str, str]] = []
         params = {"q": query, "media_type": "image", "page_size": limit}
         try:
@@ -327,6 +361,7 @@ class MediaFetcher:
                         "title": f"NASA: {title}",
                         "desc": desc[:160],
                         "license": "Public Domain (NASA)",
+                        "is_portrait": "1",
                     })
         except Exception as exc:
             print(f"[MediaFetcher] NASA archive lookup notice for '{query}': {exc}")
@@ -350,7 +385,6 @@ class MediaFetcher:
             if resp.status_code != 200:
                 return results
             pages = resp.json().get("query", {}).get("pages", {})
-            # Sort pages by search index so top relevance comes first
             sorted_pages = sorted(pages.values(), key=lambda p: p.get("index", 999))
             for page in sorted_pages:
                 title = page.get("title", "").replace("File:", "")
@@ -376,6 +410,7 @@ class MediaFetcher:
                     "title": title,
                     "desc": re.sub(r"<[^>]+>", "", desc)[:160],
                     "license": lic,
+                    "is_portrait": "1" if w <= h * 1.05 else "0",
                 })
         except Exception as exc:
             print(f"[MediaFetcher] Wikimedia candidate search notice for '{query}': {exc}")
@@ -398,22 +433,19 @@ class MediaFetcher:
             and bool(self.foundry_endpoint and self.foundry_key)
         )
 
-        # 1. Optional Pexels HD portrait video clip if PEXELS_API_KEY is configured
         if self.pexels_key and pexels_q and scene_id % 5 == 0:
             vid = self._fetch_pexels_video(pexels_q, assets_dir / f"scene_{scene_id:02d}.mp4")
             if vid:
                 return vid, "video"
 
-        # 2. If scene explicitly requests `ai_image` (for conceptual shots) and budget allows, generate via MAI-Image
         if prefer == "ai_image" and can_use_ai and img_prompt:
             ai_img = self._generate_foundry_image(img_prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.downloaded_scene_images.append(ai_img)
-                print(f"[MediaFetcher] Scene {scene_id:02d}: Generated MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
+                print(f"[MediaFetcher] Scene {scene_id:02d}: Generated 9:16 MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
                 return ai_img, "image"
 
-        # 3. If space/science topic and scene has a NASA query, try NASA Archive first
         if self.is_space_or_science and (nasa_q or wiki_q):
             for c in self._search_nasa_archive(nasa_q or wiki_q, limit=5):
                 saved = self._download_and_register_image(
@@ -423,7 +455,6 @@ class MediaFetcher:
                     self.downloaded_scene_images.append(saved)
                     return saved, "image"
 
-        # 4. Pull best matching unused image from our LLM-verified archival pool
         pool_img = self._pull_best_from_verified_pool(
             f"{wiki_q} {wp_article} {scene.get('narration', '')}",
             assets_dir / f"scene_{scene_id:02d}_archival.jpg",
@@ -432,7 +463,6 @@ class MediaFetcher:
             self.downloaded_scene_images.append(pool_img)
             return pool_img, "image"
 
-        # 5. Try scene-specific canonical Wikipedia article REST media-list if not already in pool
         if wp_article:
             for c in self._fetch_wikipedia_rest_article_media(wp_article):
                 saved = self._download_and_register_image(
@@ -442,7 +472,6 @@ class MediaFetcher:
                     self.downloaded_scene_images.append(saved)
                     return saved, "image"
 
-        # 6. Try strictly verified Wikimedia Commons search (must pass 3-layer firewall + keyword overlap)
         if wiki_q:
             for c in self._search_wikimedia_candidates(wiki_q, limit=6):
                 saved = self._download_and_register_image(
@@ -452,18 +481,15 @@ class MediaFetcher:
                     self.downloaded_scene_images.append(saved)
                     return saved, "image"
 
-        # 7. If no verified archival image matched and we still have AI image budget, use MAI-Image-2.6-Flash
         if self.ai_images_used < self.max_ai_images and self.foundry_endpoint and self.foundry_key:
             prompt = img_prompt or f"Authentic historical documentary photograph of {wiki_q or self.topic}, dramatic lighting, vertical 9:16"
             ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.downloaded_scene_images.append(ai_img)
-                print(f"[MediaFetcher] Scene {scene_id:02d}: Fallback MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
+                print(f"[MediaFetcher] Scene {scene_id:02d}: Fallback 9:16 MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
                 return ai_img, "image"
 
-        # 8. Zero-credit multi-angle documentary camera plate from an already-verified scene image
-        # (Guarantees we NEVER pull unverified random celebrity photos when a topic only has 6-8 real historical photos!)
         if self.downloaded_scene_images:
             source_img = self.downloaded_scene_images[(scene_id - 1) % len(self.downloaded_scene_images)]
             reframed_path = assets_dir / f"scene_{scene_id:02d}_detail.jpg"
@@ -482,10 +508,11 @@ class MediaFetcher:
         if not unused:
             return None
 
-        # Rank unused verified pool images by keyword overlap with current scene
         def score_cand(c: Dict[str, str]) -> int:
             text = f"{c.get('title', '')} {c.get('desc', '')}".lower()
-            return sum(1 for w in context_words if w in text)
+            kw_score = sum(2 for w in context_words if w in text)
+            portrait_bonus = 3 if c.get("is_portrait") == "1" else 0
+            return kw_score + portrait_bonus
 
         ranked = sorted(unused, key=score_cand, reverse=True)
         for cand in ranked:
@@ -512,10 +539,11 @@ class MediaFetcher:
             dest_path.write_bytes(content_bytes)
             with Image.open(dest_path) as im:
                 w, h = im.size
-                if w < 420 or h < 360:
+                if w < 420 or h < 420 or (w / max(h, 1)) > 1.65:
                     dest_path.unlink(missing_ok=True)
                     return None
-                im.convert("RGB").save(dest_path, quality=92)
+                norm_im = self.normalize_image_to_9_16(im)
+                norm_im.save(dest_path, quality=94)
 
             self.used_urls.add(img_url)
             self.used_hashes.add(digest)
@@ -542,7 +570,7 @@ class MediaFetcher:
             }
             clean_prompt = (
                 f"{prompt}, authentic historical documentary photography, dramatic chiaroscuro lighting, "
-                "35mm archival film grain, vertical 9:16 composition, no text, no watermarks, no modern elements"
+                "35mm archival film grain, strict vertical 9:16 portrait composition, no text, no watermarks, no borders"
             )
 
             route_attempts = [
@@ -574,7 +602,8 @@ class MediaFetcher:
                     else:
                         continue
                     with Image.open(dest_path) as im:
-                        im.convert("RGB").save(dest_path, quality=92)
+                        norm_im = self.normalize_image_to_9_16(im)
+                        norm_im.save(dest_path, quality=94)
                     return dest_path
             return None
         except Exception as exc:
@@ -601,28 +630,29 @@ class MediaFetcher:
             pass
         return None
 
-    @staticmethod
-    def _create_distinct_detail_crop(source_path: Path, dest_path: Path, variant: int = 1):
+    @classmethod
+    def _create_distinct_detail_crop(cls, source_path: Path, dest_path: Path, variant: int = 1):
         """
-        Creates a distinct documentary camera angle (rule-of-thirds close-up or warm archival grade)
-        from a verified scene image so we never run out of visuals and never show unverified photos.
+        Creates a distinct 9:16 documentary camera angle (rule-of-thirds close-up) normalized
+        strictly to 1080x1920 so every scene fills the 9:16 vertical screen edge-to-edge.
         """
         with Image.open(source_path) as im:
             rgb = im.convert("RGB")
             w, h = rgb.size
-            crop_w = int(w * 0.72)
-            crop_h = int(h * 0.72)
+            crop_w = int(w * 0.78)
+            crop_h = int(h * 0.78)
             offsets = [
-                (int(w * 0.04), int(h * 0.06)),
-                (int(w * 0.22), int(h * 0.10)),
-                (int(w * 0.14), int(h * 0.20)),
-                (int(w * 0.18), int(h * 0.04)),
+                (int(w * 0.04), int(h * 0.05)),
+                (int(w * 0.18), int(h * 0.08)),
+                (int(w * 0.11), int(h * 0.16)),
+                (int(w * 0.15), int(h * 0.04)),
             ]
             ox, oy = offsets[variant % len(offsets)]
             cropped = rgb.crop((ox, oy, min(w, ox + crop_w), min(h, oy + crop_h)))
-            cropped = ImageEnhance.Contrast(cropped).enhance(1.10)
-            cropped = ImageEnhance.Color(cropped).enhance(0.86)
-            cropped.save(dest_path, quality=92)
+            cropped = ImageEnhance.Contrast(cropped).enhance(1.08)
+            cropped = ImageEnhance.Color(cropped).enhance(0.90)
+            norm_im = cls.normalize_image_to_9_16(cropped)
+            norm_im.save(dest_path, quality=94)
 
     @staticmethod
     def _create_archival_fallback_card(dest_path: Path):
