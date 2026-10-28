@@ -2,7 +2,9 @@ name: Automated US History Shorts (Every 12 Hours)
 
 on:
   schedule:
-    - cron: '0 */12 * * *'
+    # Off-peak primary slots (01:25 UTC & 13:25 UTC) + backup slots (04:25 UTC & 16:25 UTC)
+    # `_should_skip_backup_cron_slot()` in `src/main.py` automatically skips the backup slot if the primary slot succeeded!
+    - cron: '25 1,4,13,16 * * *'
   workflow_dispatch:
     inputs:
       custom_topic:
@@ -12,10 +14,14 @@ on:
       dry_run:
         description: 'Skip YouTube upload (true = render & preview MP4 only, false = upload to YouTube)'
         required: false
-        default: 'true'
+        default: 'false'
 
 permissions:
   contents: write
+
+concurrency:
+  group: us-history-shorts-pipeline
+  cancel-in-progress: false
 
 jobs:
   generate-and-upload-short:
@@ -69,6 +75,7 @@ jobs:
           YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
           # Optional Pexels key
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
           CUSTOM_TOPIC: ${{ github.event.inputs.custom_topic }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
@@ -90,7 +97,5 @@ jobs:
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "History Shorts Auto-Bot"
-          git add data/used_topics.json data/upload_history.json
-          git diff --staged --quiet || git commit -m "chore: record completed history short [skip ci]"
-          git push
-          
+          git add data/used_topics.json data/upload_history.json data/topics_seed.json
+          git diff --staged --quiet || (git pull --rebase origin main && git commit -m "chore: record completed history short" && git push)
