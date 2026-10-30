@@ -1,17 +1,11 @@
 """
-Main End-to-End Orchestrator for the Automated US History Shorts Channel (v6.0 — Smooth Cinema & Verified Video Pool Edition).
-Configured to drop-in match your exact Heroku Config Vars (`AZURE_SPEECH_KEY`, `FOUNDRY_TEXT_ENDPOINT`,
-`FOUNDRY_ENDPOINT`, `MAI-Image-2.6-Flash`, `gpt-6-luna`, `YOUTUBE_TOKEN_JSON`, etc.).
-
-Upgrades in v6.0:
-1. Keyless LLM-Verified Video Clip Pool (`src/media_fetcher.py` & `src/foundry_llm.py`) — pre-fetches candidate videos
-   from Wikipedia REST Video, Wikimedia Commons Video (`filetype:video` streamable derivatives), NASA Video Archive,
-   and US National Archives / Prelinger using concise `video_pool_queries`, verifies every clip with `gpt-6-luna`
-   (`verify_video_candidates`), and validates 5 frames per clip to block black screens and text slates.
-2. Zero Camera Shake & 3x Subpixel Smooth Cinema Motion (`src/video_composer.py`) — eliminates all `sin()`/`cos()`
-   shake and mid-scene white flashes, upscales plates to `3240x5760` before `zoompan` to fix FFmpeg Ticket #4298
-   pixel jitter, and animates wide photos/clips with 2-layer parallax over a moving blurred backdrop.
-3. Strict 0% Visual Repetition Guarantee — never reuses an image or clip across scenes in the same Short.
+Main End-to-End Orchestrator for the Automated US History Shorts Channel (v7.5 — Hybrid Video Clip + Cost-Capped 4 AI Image Edition).
+Writes a complete **Visual & Cost Breakdown Table** directly onto your GitHub Actions Run Summary page (`$GITHUB_STEP_SUMMARY`)
+after every single run so you can see at a glance:
+- Exact number of AI images generated (e.g. `4 / 4 cap`)
+- Exact number of Real Video Clips used
+- Exact number of Archival Photos used
+- Scene-by-scene table of every visual used in the Short!
 """
 from datetime import datetime, timezone
 import json
@@ -60,6 +54,46 @@ def _should_skip_backup_cron_slot(min_hours_between_uploads: float = 8.0) -> boo
     return False
 
 
+def _write_github_step_summary(topic: str, title: str, fetcher: MediaFetcher, video_id: str):
+    """
+    Writes a clean Markdown table to `$GITHUB_STEP_SUMMARY` (displayed right on the GitHub Actions run page)
+    and prints it to the console so you always know the exact count of AI images, video clips, and photos used!
+    """
+    lines = [
+        f"## 🎬 US History Short Run Summary — `{title}`",
+        f"- **Historical Topic**: {topic}",
+        f"- **YouTube Video ID**: `{video_id}`",
+        "",
+        "### 📊 Visual & Cost Breakdown",
+        "| Metric | Count | Cost Impact |",
+        "| :--- | :--- | :--- |",
+        f"| **🎨 Paid AI Images (`MAI-Image-2.6-Flash`)** | **`{fetcher.ai_images_used} / {fetcher.max_ai_images}` (Hard Cap)** | Capped at `{fetcher.max_ai_images}` |",
+        f"| **🎬 Real Moving Video Clips** | **`{fetcher.video_clips_used}` clips** | **$0.00 (Free)** |",
+        f"| **🏛️ Verified Archival Photos** | **`{fetcher.archival_photos_used}` photos** | **$0.00 (Free)** |",
+        f"| **🎞️ Noir Storyboard Macro Cuts** | **`{fetcher.reframed_cuts_used}` cuts** | **$0.00 (Free)** |",
+        "",
+        "### 🎞️ Scene-by-Scene Visual Audit",
+        "| Scene | Media Type Used | Source / Asset | Spoken Narration |",
+        "| :---: | :--- | :--- | :--- |",
+    ]
+    for item in fetcher.scene_audit_log:
+        lines.append(
+            f"| **{item['scene_id']:02d}** | {item['kind']} | `{item['source']}` | {item['narration']} |"
+        )
+    summary_md = "\n".join(lines) + "\n"
+    print("\n" + "=" * 78)
+    print(summary_md)
+    print("=" * 78 + "\n")
+
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY", "").strip()
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as sf:
+                sf.write(summary_md)
+        except Exception as exc:
+            print(f"[Pipeline] GITHUB_STEP_SUMMARY write notice: {exc}")
+
+
 def run_pipeline():
     load_dotenv()
     if _should_skip_backup_cron_slot():
@@ -76,7 +110,7 @@ def run_pipeline():
     llm = FoundryLLMClient()
     topic = select_next_topic(llm_client=llm)
 
-    # Step 1: Storyboard & Concise Video Pool Queries via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
+    # Step 1: Storyboard & Physical Video Pool Queries via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
     storyboard = llm.generate_storyboard(topic)
     scenes = storyboard.get("scenes", [])
     if not scenes:
@@ -88,7 +122,7 @@ def run_pipeline():
         scenes, temp_dir / "audio"
     )
 
-    # Step 3: Fetch LLM+CV-Verified Video Clips + Unique Archival Photos + Unique MAI-Image Visuals
+    # Step 3: Fetch Verified Video Clips + Verified Archival Photos + Cost-Capped MAI-Image Visuals
     fetcher = MediaFetcher(
         topic=topic,
         era_keywords=storyboard.get("historical_era_keywords", []),
@@ -103,17 +137,11 @@ def run_pipeline():
         scene["asset_path"] = str(asset_path)
         scene["asset_type"] = asset_type
 
-    print(
-        f"[Pipeline] v6.0 Visuals ready: {fetcher.video_clips_used} verified VIDEO CLIPS, "
-        f"{fetcher.ai_images_used} unique MAI-Image scenes, "
-        f"and {len(fetcher.used_urls)} total verified archival assets (0 repeats)."
-    )
-
     # Step 4: Generate Pro Creator Multi-Color Word-Synced Captions + Subscribe CTA (.ass)
     ass_path = output_dir / "subtitles.ass"
     generate_synced_ass_captions(word_timings, enriched_scenes, ass_path)
 
-    # Step 5: Render 1080x1920 MP4 with Smooth 3x Subpixel Motion, 2-Layer Parallax & Sidechain BGM
+    # Step 5: Render 1080x1920 MP4 with Dual-Camera Axial Cuts, IMAX Video Framing & -14 LUFS Audio
     composer = VideoComposer()
     final_mp4 = output_dir / "final_short.mp4"
     composer.render_short(enriched_scenes, master_vo, ass_path, final_mp4, temp_dir / "segments")
@@ -125,10 +153,12 @@ def run_pipeline():
                 "topic": topic,
                 "title": storyboard.get("title"),
                 "description": storyboard.get("description"),
-                "video_clips_used": fetcher.video_clips_used,
                 "ai_images_used": fetcher.ai_images_used,
-                "verified_video_pool_size": len(fetcher.verified_video_pool),
-                "verified_photo_pool_size": len(fetcher.verified_pool),
+                "max_ai_images_cap": fetcher.max_ai_images,
+                "video_clips_used": fetcher.video_clips_used,
+                "archival_photos_used": fetcher.archival_photos_used,
+                "reframed_cuts_used": fetcher.reframed_cuts_used,
+                "scene_audit_log": fetcher.scene_audit_log,
                 "scenes": enriched_scenes,
                 "attributions": fetcher.attributions,
             },
@@ -146,10 +176,13 @@ def run_pipeline():
         attributions=fetcher.attributions,
     )
 
-    # Step 7: Mark topic as used and push immediately to GitHub
+    # Step 7: Write Visual & Cost Audit Table to GitHub Actions Run Summary (`$GITHUB_STEP_SUMMARY`)
+    _write_github_step_summary(topic, storyboard.get("title", topic), fetcher, video_id)
+
+    # Step 8: Mark topic as used and push immediately to GitHub
     if video_id != "dry_run_id":
         mark_topic_completed(topic, video_id=video_id, title=storyboard.get("title", topic))
-    print(f"[Pipeline] Completed v6.0 run for topic: '{topic}' (video_id={video_id})")
+    print(f"[Pipeline] Completed v7.5 run for topic: '{topic}' (video_id={video_id})")
 
 
 if __name__ == "__main__":

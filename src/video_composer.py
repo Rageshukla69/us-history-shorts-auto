@@ -1,18 +1,12 @@
 """
-Professional Documentary Video Composer (v7.0 — 100% Script-True Dual-Camera Cinema Engine, Live 35mm Film Grain & -14 LUFS Audio):
-Why v7.0 Looks Like a Million-Subscriber Documentary Channel (History Bypass / Fern / Johnny Harris):
-1. Dual-Camera Hollywood Axial Cut Engine (`Shot A: Wide Establishing` -> `Shot B: 1.32x Subject Close-Up`):
-   - Every story beat >= 2.6s is rendered as TWO distinct, rock-steady cinema camera angles:
-     * Shot A (First 52% of beat): Full vertical 9:16 Wide Establishing Shot with smooth sinusoidal gimbal easing
-       (`0.5 - 0.5*cos(PI*on/frames)`).
-     * Shot B (Second 48% of beat): Clean Hollywood axial cut to a `1.32x` Tight Close-Up on the upper-third subject
-       focal region (`y='(ih-ih/zoom)*0.26'`) with a smooth counter-pan or pull-out!
-   - Zero sine-wave shake (`sin()` is completely banned), zero blurry white flashes, and 3x Subpixel Supersampling
-     (`3240x5760`) so 11 story beats produce 22 distinct, buttery-smooth camera shots (a new camera angle every ~2.2s!).
-2. Live Temporal 35mm Film Grain + Real-Time Breathing Atmospheric Lighting:
-   - Every frame is rendered with live temporal film grain (`noise=c0s=5:c0f=t+u`) and per-frame dynamic ambient light
-     modulation (`vignette=angle='PI/6+0.03*sin(2*PI*t/2.2)':eval=frame`) so scenes breathe like real 35mm motion film.
-3. Broadcast `-14 LUFS` Audio Master + Dual-Beat Sound Design (Whoosh on Scene Cuts + Analog Shutter on Axial Cuts).
+Professional Documentary Video Composer (v7.5 — Hybrid Real Video Clips + Dual-Camera Cinema Engine, Live 35mm Film Grain & -14 LUFS Audio):
+1. Real Motion Video Clips (`asset_type == "video"`):
+   - Rendered in a tall, borderless `1080x1240` IMAX Vertical Cinema Window over a dark Gaussian-blurred backdrop,
+     unified with warm 35mm documentary color grading (`eq=contrast=1.07:saturation=0.90`) and live temporal 35mm film grain.
+2. Dual-Camera Hollywood Axial Cut Engine for Stills (`Shot A: Wide Establishing` -> `Shot B: 1.32x Subject Close-Up`):
+   - Every image beat >= 2.6s is rendered as TWO rock-steady cinema camera angles with 3x Subpixel Supersampling (`3240x5760`),
+     sinusoidal gimbal easing, live temporal 35mm film grain (`noise=c0s=5:c0f=t+u`), and per-frame breathing lighting.
+3. Broadcast `-14 LUFS` Audio Master + Dual-Beat Sound Design (Whoosh on Scene Cuts + Analog Lens Click on Axial Cuts).
 """
 import os
 import random
@@ -133,9 +127,6 @@ class VideoComposer:
             else:
                 clean_img = asset_path
 
-            # Dual-Camera Hollywood Axial Cut for story beats >= 2.6s:
-            # Shot A (52%): Wide Establishing Gimbal Shot (1.00x -> 1.07x)
-            # Shot B (48%): Clean Axial Cut to 1.32x Subject Close-Up / Counter-Tracking Shot (ZERO shake, ZERO flash!)
             if asset_type == "image" and dur >= 2.6:
                 dur_a = round(dur * 0.52, 3)
                 dur_b = round(dur - dur_a, 3)
@@ -164,7 +155,7 @@ class VideoComposer:
                 seg = temp_dir / f"seg_{scene_id:02d}.mp4"
                 self._render_scene_segment(
                     asset_path=clean_img,
-                    asset_type="prepared_image" if asset_type == "image" else asset_type,
+                    asset_type="prepared_image" if asset_type == "image" else "video",
                     duration=dur,
                     effect=effect,
                     out_path=seg,
@@ -238,7 +229,7 @@ class VideoComposer:
         ]
         self._run_ffmpeg(final_cmd, "final subtitle burn-in and master encode")
         print(
-            f"[VideoComposer] Rendered v7.0 Dual-Camera 100% Script-True Short ({len(segment_files)} camera shots) "
+            f"[VideoComposer] Rendered v7.5 Hybrid Cinema Short ({len(segment_files)} camera shots) "
             f"-> {output_mp4} ({output_mp4.stat().st_size // 1024} KB)"
         )
         return output_mp4
@@ -256,79 +247,120 @@ class VideoComposer:
         frames = max(int(round(duration * self.FPS)), 18)
         ease = f"(0.5-0.5*cos(PI*on/{frames}))"
 
-        if not is_closeup:
-            # Shot A: Wide Establishing Gimbal Shot (1.00x -> 1.075x) with sinusoidal velocity easing
-            if effect in ("smooth_pull_out", "high_contrast_zoom_out") or cam_mode == 1:
-                z_expr = f"1.08-0.07*{ease}"
-                x_expr = "iw/2-(iw/zoom/2)"
-                y_expr = "ih/2-(ih/zoom/2)"
-            elif effect in ("cinema_pan_right", "parallax_pan_right") or cam_mode == 2:
-                z_expr = "1.06"
-                x_expr = f"(iw-iw/zoom)*0.18+(iw-iw/zoom)*0.64*{ease}"
-                y_expr = "ih/2-(ih/zoom/2)"
-            elif effect == "cinema_pan_left" or cam_mode == 3:
-                z_expr = "1.06"
-                x_expr = f"(iw-iw/zoom)*0.82-(iw-iw/zoom)*0.64*{ease}"
-                y_expr = "ih/2-(ih/zoom/2)"
+        if asset_type in ("prepared_image", "image"):
+            if not is_closeup:
+                if effect in ("smooth_pull_out", "high_contrast_zoom_out") or cam_mode == 1:
+                    z_expr = f"1.08-0.07*{ease}"
+                    x_expr = "iw/2-(iw/zoom/2)"
+                    y_expr = "ih/2-(ih/zoom/2)"
+                elif effect in ("cinema_pan_right", "parallax_pan_right") or cam_mode == 2:
+                    z_expr = "1.06"
+                    x_expr = f"(iw-iw/zoom)*0.18+(iw-iw/zoom)*0.64*{ease}"
+                    y_expr = "ih/2-(ih/zoom/2)"
+                elif effect == "cinema_pan_left" or cam_mode == 3:
+                    z_expr = "1.06"
+                    x_expr = f"(iw-iw/zoom)*0.82-(iw-iw/zoom)*0.64*{ease}"
+                    y_expr = "ih/2-(ih/zoom/2)"
+                else:
+                    z_expr = f"1.005+0.075*{ease}"
+                    x_expr = "iw/2-(iw/zoom/2)"
+                    y_expr = "ih/2-(ih/zoom/2)"
+                transition_filter = "fade=t=in:st=0:d=0.09,"
             else:
-                z_expr = f"1.005+0.075*{ease}"
-                x_expr = "iw/2-(iw/zoom/2)"
-                y_expr = "ih/2-(ih/zoom/2)"
-            transition_filter = "fade=t=in:st=0:d=0.09,"
-        else:
-            # Shot B: Clean Hollywood Axial Close-Up (1.28x - 1.34x) focused on the upper-third subject focal region
-            # Jumps scale cleanly (from 1.07x to 1.32x) with ZERO shake and ZERO flash!
-            if cam_mode == 0:
-                z_expr = f"1.32-0.08*{ease}"
-                x_expr = f"iw/2-(iw/zoom/2)+((iw-iw/zoom)*0.14)*{ease}"
-                y_expr = "(ih-ih/zoom)*0.25"
-            elif cam_mode == 1:
-                z_expr = f"1.24+0.09*{ease}"
-                x_expr = f"iw/2-(iw/zoom/2)-((iw-iw/zoom)*0.14)*{ease}"
-                y_expr = "(ih-ih/zoom)*0.27"
-            elif cam_mode == 2:
-                z_expr = "1.30"
-                x_expr = f"(iw-iw/zoom)*0.72-(iw-iw/zoom)*0.44*{ease}"
-                y_expr = "(ih-ih/zoom)*0.24"
-            else:
-                z_expr = "1.30"
-                x_expr = f"(iw-iw/zoom)*0.28+(iw-iw/zoom)*0.44*{ease}"
-                y_expr = "(ih-ih/zoom)*0.26"
-            transition_filter = ""
+                if cam_mode == 0:
+                    z_expr = f"1.32-0.08*{ease}"
+                    x_expr = f"iw/2-(iw/zoom/2)+((iw-iw/zoom)*0.14)*{ease}"
+                    y_expr = "(ih-ih/zoom)*0.25"
+                elif cam_mode == 1:
+                    z_expr = f"1.24+0.09*{ease}"
+                    x_expr = f"iw/2-(iw/zoom/2)-((iw-iw/zoom)*0.14)*{ease}"
+                    y_expr = "(ih-ih/zoom)*0.27"
+                elif cam_mode == 2:
+                    z_expr = "1.30"
+                    x_expr = f"(iw-iw/zoom)*0.72-(iw-iw/zoom)*0.44*{ease}"
+                    y_expr = "(ih-ih/zoom)*0.24"
+                else:
+                    z_expr = "1.30"
+                    x_expr = f"(iw-iw/zoom)*0.28+(iw-iw/zoom)*0.44*{ease}"
+                    y_expr = "(ih-ih/zoom)*0.26"
+                transition_filter = ""
 
-        # Live Temporal 35mm Film Grain + Real-Time Breathing Atmospheric Vignette (`eval=frame`)
-        vf = (
-            f"scale={self.SUBPIXEL_W}:{self.SUBPIXEL_H}:flags=bilinear,"
-            f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':"
-            f"d={frames}:s={self.WIDTH}x{self.HEIGHT}:fps={self.FPS},"
-            f"noise=c0s=5:c0f=t+u,"
-            f"vignette=angle='PI/6+0.03*sin(2*PI*t/2.2)':eval=frame,"
-            f"drawbox=x=0:y=ih*0.70:w=iw:h=ih*0.30:color=0x08080C@0.44:t=fill,"
-            f"{transition_filter}"
-            f"setsar=1,format=yuv420p"
-        )
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(asset_path),
-            "-vf",
-            vf,
-            "-t",
-            f"{duration:.3f}",
-            "-r",
-            str(self.FPS),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
-            "-an",
-            str(out_path),
-        ]
+            vf = (
+                f"scale={self.SUBPIXEL_W}:{self.SUBPIXEL_H}:flags=bilinear,"
+                f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':"
+                f"d={frames}:s={self.WIDTH}x{self.HEIGHT}:fps={self.FPS},"
+                f"noise=c0s=5:c0f=t+u,"
+                f"vignette=angle='PI/6+0.03*sin(2*PI*t/2.2)':eval=frame,"
+                f"drawbox=x=0:y=ih*0.70:w=iw:h=ih*0.30:color=0x08080C@0.44:t=fill,"
+                f"{transition_filter}"
+                f"setsar=1,format=yuv420p"
+            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(asset_path),
+                "-vf",
+                vf,
+                "-t",
+                f"{duration:.3f}",
+                "-r",
+                str(self.FPS),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                str(out_path),
+            ]
+        else:
+            # Real Motion Video Clip: Borderless IMAX Vertical Cinema Window (1080x1240) + 35mm Color Grade & Live Grain
+            filter_complex = (
+                f"[0:v]split=2[bg_in][fg_in];"
+                f"[bg_in]scale={self.WIDTH}:{self.HEIGHT}:force_original_aspect_ratio=increase,"
+                f"crop={self.WIDTH}:{self.HEIGHT},boxblur=32:4,eq=brightness=-0.28:saturation=0.80[bg];"
+                f"[fg_in]scale=1380:1240:force_original_aspect_ratio=increase,"
+                f"crop={self.WIDTH}:min(ih\\,1240),"
+                f"eq=contrast=1.07:saturation=0.90:gamma_r=1.02:gamma_b=0.97[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)*0.34,"
+                f"fps={self.FPS},"
+                f"noise=c0s=4:c0f=t+u,"
+                f"vignette=angle='PI/6+0.03*sin(2*PI*t/2.2)':eval=frame,"
+                f"drawbox=x=0:y=0:w=iw:h=ih*0.12:color=0x08080C@0.38:t=fill,"
+                f"drawbox=x=0:y=ih*0.68:w=iw:h=ih*0.32:color=0x08080C@0.48:t=fill,"
+                f"fade=t=in:st=0:d=0.09,"
+                f"setsar=1,format=yuv420p[vout]"
+            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(asset_path),
+                "-t",
+                f"{duration:.3f}",
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[vout]",
+                "-r",
+                str(self.FPS),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                str(out_path),
+            ]
         self._run_ffmpeg(cmd, f"scene segment {out_path.name}")
 
     def _select_bgm_track(self, temp_dir: Path) -> Path:
