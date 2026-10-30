@@ -57,6 +57,7 @@ def upload_short_to_youtube(
     description: str,
     tags: List[str],
     attributions: List[str],
+    sources: Optional[List[dict]] = None,
 ) -> Optional[str]:
     if os.getenv("DRY_RUN", "false").lower() == "true":
         print("[YouTubeUploader] DRY_RUN is enabled; skipping YouTube API upload.")
@@ -71,7 +72,16 @@ def upload_short_to_youtube(
     full_description = description.strip() + "\n\n#Shorts #History #USHistory #Documentary\n"
     if attributions:
         unique_attr = list(dict.fromkeys(attributions))[:12]
-        full_description += "\nArchival Media Credits (Wikimedia Commons):\n" + "\n".join(unique_attr)
+        full_description += "\nMedia credits / licences:\n" + "\n".join(unique_attr)
+    if sources:
+        source_lines = []
+        for item in sources[:8]:
+            name = str(item.get("name") or "Historical source").strip()
+            url = str(item.get("url") or "").strip()
+            if url.startswith("https://") or url.startswith("http://"):
+                source_lines.append(f"- {name}: {url}")
+        if source_lines:
+            full_description += "\n\nHistorical references (verify before publication):\n" + "\n".join(source_lines)
 
     body = {
         "snippet": {

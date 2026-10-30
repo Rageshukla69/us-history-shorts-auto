@@ -123,8 +123,8 @@ def _merge_punctuation_tokens(word_timings: List[WordTiming]) -> List[WordTiming
 
 def _group_into_safe_chunks(
     word_timings: List[WordTiming],
-    max_words: int = 3,
-    max_chars_two_lines: int = 22,
+    max_words: int = 4,
+    max_chars_two_lines: int = 28,
 ) -> List[List[WordTiming]]:
     chunks: List[List[WordTiming]] = []
     i = 0
@@ -161,7 +161,7 @@ def _group_into_safe_chunks(
 def _format_chunk_lines(
     chunk: List[WordTiming],
     active_idx: int,
-    max_single_line_chars: int = 12,
+    max_single_line_chars: int = 15,
 ) -> str:
     plain_words = [_clean_word(wt.word) for wt in chunk]
     total_chars = sum(len(w) for w in plain_words) + max(0, len(plain_words) - 1)
@@ -179,7 +179,7 @@ def _format_chunk_lines(
             line_groups = [[plain_words[0], plain_words[1]], [plain_words[2]]]
 
     max_line_chars = max(len(" ".join(lg)) for lg in line_groups)
-    base_fs_tag = "\\fs74" if max_line_chars > 13 else "\\fs90"
+    base_fs_tag = "\\fs64" if max_line_chars > 18 else "\\fs72"
 
     styled_words = []
     for j, w_str in enumerate(plain_words):
@@ -223,9 +223,9 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: MainCaption,Montserrat,90,&H00FFFFFF,&H0000D7FF,&H00000000,&H96000000,-1,0,0,0,100,100,1.0,0,1,8,5,2,65,65,530,1
-Style: TopBadge,Montserrat,50,&H0000D7FF,&H00FFFFFF,&H00101010,&HD2080808,-1,0,0,0,100,100,2.0,0,3,16,0,8,70,70,215,1
-Style: SubscribeCTA,Montserrat,44,&H00FFFFFF,&H0000D7FF,&H001414CC,&HE61010B0,-1,0,0,0,100,100,2.0,0,3,16,0,8,70,70,310,1
+Style: MainCaption,Montserrat,72,&H00FFFFFF,&H0000D7FF,&H00000000,&H96000000,-1,0,0,0,100,100,1.0,0,1,8,5,2,65,65,530,1
+Style: TopBadge,Montserrat,38,&H0000D7FF,&H00FFFFFF,&H00101010,&HD2080808,-1,0,0,0,100,100,2.0,0,3,16,0,8,70,70,215,1
+Style: SubscribeCTA,Montserrat,32,&H00FFFFFF,&H0000D7FF,&H001414CC,&HE61010B0,-1,0,0,0,100,100,2.0,0,3,16,0,8,70,70,310,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -248,7 +248,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
             line_text = _format_chunk_lines(chunk, active_idx)
             events.append(
-                f"Dialogue: 2,{_format_ass_time(ev_start)},{_format_ass_time(ev_end)},MainCaption,,0,0,0,,{line_text}"
+                f"Dialogue: 2,{_format_ass_time(ev_start)},{_format_ass_time(ev_end)},MainCaption,,72,72,0,,{line_text}"
             )
 
     last_badge = ""
@@ -270,15 +270,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         s_end = min(s_end_val, s_start + 2.1)
         if s_end > s_start:
             events.append(
-                f"Dialogue: 1,{_format_ass_time(s_start)},{_format_ass_time(s_end)},TopBadge,,0,0,0,,{{\\fad(90,140)\\fscx90\\fscy90\\t(0,90,\\fscx100\\fscy100)}}  {clean_badge}  "
+                f"Dialogue: 1,{_format_ass_time(s_start)},{_format_ass_time(s_end)},TopBadge,,80,80,0,,{{\\fad(90,140)\\fscx90\\fscy90\\t(0,90,\\fscx100\\fscy100)}}  {clean_badge}  "
             )
 
     # Add an animated Subscribe CTA pill in the final 2.8 seconds to convert viewers into subscribers!
     if total_end_sec > 6.0:
-        cta_start = max(0.0, total_end_sec - 2.8)
+        cta_start = max(0.0, total_end_sec - 2.2)
         events.append(
-            f"Dialogue: 3,{_format_ass_time(cta_start)},{_format_ass_time(total_end_sec)},SubscribeCTA,,0,0,0,,"
-            r"{\fad(120,120)\fscx85\fscy85\t(0,140,\fscx104\fscy104)\t(140,260,\fscx100\fscy100)}  SUBSCRIBE FOR DAILY HISTORY  "
+            f"Dialogue: 3,{_format_ass_time(cta_start)},{_format_ass_time(total_end_sec)},SubscribeCTA,,80,80,0,,"
+            r"{\fad(120,120)\fscx85\fscy85\t(0,140,\fscx104\fscy104)\t(140,260,\fscx100\fscy100)}  FOLLOW FOR MORE HISTORY  "
         )
 
     output_ass.write_text(header + "\n".join(events) + "\n", encoding="utf-8")

@@ -18,59 +18,50 @@ from typing import Any, Dict, List
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-SYSTEM_PROMPT = """You are an elite viral US YouTube Shorts documentary director ("History Bypass / Fern / Johnny Harris" style).
-Your goal is 100% SCRIPT-TO-VISUAL ACCURACY, real moving archival/B-roll video clips, and high viewer retention.
-Write a gripping, fast-paced 48-to-52 second spoken script (~115 to 125 words total) structured into **10 to 12 vivid cinematic story beats** (~10 words per beat).
+SYSTEM_PROMPT = """You are the story editor and visual director for a premium US-history documentary Shorts channel.
+Write a factual, source-conscious 45-60 second script (105-135 spoken words) in 8-12 scenes.
 
-STRICT VISUAL ROUTING, REAL VIDEO CLIP SOURCING & COST CAP RULES:
-1. 0.0s THUMB-STOPPING HOOK (Scene 1):
-   - Scene 1 MUST open with a shocking, counter-intuitive hook containing a concrete year, number, or secret.
-   - Prefer real, historically accurate archival imagery or relevant footage for Scene 1. Set `prefer_media` to `archival` or `video_clip`; use `ai_image` only when explicitly permitted by MAX_AI_IMAGES_PER_SHORT.
-2. LOW-COST MEDIA MIX (ZERO AI IMAGES BY DEFAULT):
-   - Set `prefer_media` to `video_clip` or `archival` for every scene where relevant real media exists. Use `ai_image` only for a truly unfilmable/specific scene AND only if MAX_AI_IMAGES_PER_SHORT is greater than zero.
-   - Set `"prefer_media": "video_clip"` on **5 scenes** where real physical motion footage or archival 16mm/35mm film exists (e.g., vintage tape recorder spinning, 1960s city street traffic, vintage automobile at night, cat walking outdoors, soldiers marching, artillery firing).
-   - Set `"prefer_media": "archival"` on **2 to 3 scenes** naming real historical buildings, declassified programs, or historical figures documented on Wikipedia.
-3. PHYSICAL & ARCHIVAL VIDEO QUERIES (`video_pool_queries` + per-scene `video_query`):
-   - CRITICAL: NEVER put political agencies, presidents, or abstract nouns (like `"CIA"`, `"Central Intelligence Agency"`, `"Soviet"`, `"Government"`, `"Intelligence"`) in `video_pool_queries` or `video_query` — on public video archives, those words return C-SPAN speeches, Obama, and Zoom interviews!
-   - Instead, EVERY entry in `video_pool_queries` (8 strings) and `video_query` MUST describe a **physical object, vintage machine, vehicle, animal action, or 1940s–1970s city/landscape** that appears in vintage Prelinger 16mm film or nature/object B-roll (e.g., for Acoustic Kitty: `["reel to reel tape recorder", "1960s city street traffic", "tabby cat walking", "vintage radio equipment", "1960s automobile night", "telephone switchboard 1960s", "Capitol dome Washington", "vintage microphone"]`).
-4. LITERAL `image_prompt` ON EVERY SCENE:
-   - Write a hyper-specific, period-accurate `image_prompt` for EVERY scene (even `video_clip` and `archival` scenes) so every scene has an exact visual blueprint.
-5. SMOOTH CINEMA CAMERA MOTION (`effect` per scene — ZERO SHAKE):
-   - Choose from: `"smooth_push_in"`, `"smooth_pull_out"`, `"cinema_pan_right"`, `"cinema_pan_left"`, `"cinema_tilt_up"`.
+EDITORIAL RULES:
+- Hook with a verifiable surprise, not fabricated numbers or clickbait certainty.
+- Distinguish established facts, disputed claims and legends. Never invent quotations, dollar values, motives or dialogue.
+- Avoid repeating the same fact. Give each scene one clear story beat and one concrete visual subject.
+- Provide 3-6 source URLs or named sources in `sources`; prefer primary/authoritative sources (NARA, LOC, Smithsonian, official archives, academic institutions). If a claim is uncertain, say so in narration or description.
+- Keep narration natural when spoken aloud. Avoid long clauses and dense dates.
 
-Return ONLY valid JSON matching this schema:
+VISUAL RULES:
+- Image generation is optional and disabled by default. Never force an AI image in scene 1.
+- Prefer authentic archival footage for genuine motion, then historically relevant photographs, maps, artefacts and documents.
+- `video_query` must describe what should actually be visible (object/action/place), not just an institution or abstract topic.
+- `wikimedia_query` must describe the exact subject and period. `image_prompt` is a fallback only when paid generation is enabled.
+- `visual_subject` should be a short, concrete description of the visible subject. `visual_keywords` should contain 3-8 distinctive nouns/entities.
+- Do not imply that generic stock footage is archival evidence. Label reconstructions honestly.
+- Choose `prefer_media` from `video_clip`, `archival`, `ai_image`; use `ai_image` only for scenes where no authentic source can reasonably exist.
+
+Return ONLY valid JSON with this shape:
 {
-  "title": "Viral US YouTube Short title under 62 chars (include #shorts)",
-  "description": "Gripping 2-sentence hook + historical context + #shorts #history #ushistory #documentary",
-  "tags": ["history", "shorts", "ushistory", "documentary", "viralhistory"],
-  "research_sources": [{"title": "Source title", "url": "https://..."}],
+  "title": "Title under 62 characters including #Shorts",
+  "description": "Two or three concise sentences with historical context and source note",
+  "tags": ["history", "shorts", "ushistory", "documentary"],
+  "sources": [{"name":"Source name","url":"https://..."}],
+  "historical_era_keywords": ["1960s", "Cold War"],
+  "wikipedia_articles": ["Relevant article title"],
+  "video_pool_queries": ["specific physical action or object query"],
+  "required_visual_keywords": ["distinctive subject terms"],
   "is_space_or_science": false,
-  "wikipedia_articles": ["Acoustic Kitty", "Central Intelligence Agency", "Cold War", "Signals intelligence"],
-  "video_pool_queries": [
-    "reel to reel tape recorder",
-    "1960s city street traffic",
-    "tabby cat walking",
-    "vintage radio transmitter",
-    "1960s automobile night",
-    "vintage laboratory electronics",
-    "Washington Monument",
-    "vintage microphone"
-  ],
-  "required_visual_keywords": ["1960s", "1967", "tape", "radio", "cat", "street", "traffic", "automobile", "washington", "cia", "cold war", "microphone"],
-  "scenes": [
-    {
-      "scene_id": 1,
-      "narration": "In 1967, the CIA spent twenty million dollars turning a live cat into a spy.",
-      "video_query": "reel to reel tape recorder",
-      "pexels_query": "vintage reel to reel tape recorder spinning",
-      "wikimedia_query": "1960s reel to reel tape recorder historical",
-      "wikipedia_article": "Acoustic Kitty",
-      "image_prompt": "1967 Cold War CIA secret electronics laboratory in Langley Virginia, a sleek grey tabby cat sitting on a wooden workbench beside glowing vintage reel-to-reel tape recorders and a shadowy intelligence officer in a 1960s suit, dramatic noir lighting, 35mm archival film photography, vertical 9:16, no text",
-      "prefer_media": "archival",
-      "effect": "smooth_push_in",
-      "on_screen_callout": "1967: $20M SPY"
-    }
-  ]
+  "scenes": [{
+    "scene_id": 1,
+    "narration": "One short spoken beat.",
+    "visual_subject": "Specific visible subject and action",
+    "visual_keywords": ["subject", "object", "period"],
+    "video_query": "Specific physical footage query",
+    "pexels_query": "Specific visual query, not an abstract topic",
+    "wikimedia_query": "Exact historical subject photograph",
+    "wikipedia_article": "Relevant article title",
+    "image_prompt": "Historically accurate documentary reconstruction prompt; no text",
+    "prefer_media": "archival",
+    "effect": "smooth_push_in",
+    "on_screen_callout": "SHORT FACT OR DATE"
+  }]
 }
 """
 
@@ -153,27 +144,36 @@ class FoundryLLMClient:
         max_ai = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "0")))
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Create a high-retention 50-second US History YouTube Short storyboard on: '{topic}'. "
-                    "Structure the script into **11 to 12 vivid cinematic story beats** (~10 words per beat, ~120 words total). "
-                    f"AI IMAGE BUDGET: at most {max_ai} scenes may use 'ai_image'; prefer ZERO and never force an AI image for the hook. "
-                    "Prefer genuine subject-matched archival photographs and moving footage. For each scene, use precise visual search queries tied to its narration, not generic topic keywords. "
-                    "Do not invent quotations, exact costs, dates, casualty figures, motives, or named participants. If a detail is disputed or uncertain, qualify it. "
-                    "Include a 'research_sources' array of credible source URLs/titles supporting key factual claims. Output ONLY valid JSON."
-                ),
-            },
+            {"role": "user", "content": (
+                f"Create a 45-60 second documentary Short about: {topic!r}. "
+                "Use 8-12 scenes, 105-135 spoken words total. "
+                f"Paid image-generation budget is {max_ai}; set at most {max_ai} scenes to ai_image, "
+                "and do not force AI imagery for the opening. Make every scene's visual_subject concrete. "
+                "Provide source URLs/names for key factual claims. Return JSON only."
+            )},
         ]
         content = self._call_chat_completions(messages)
         match = re.search(r"\{[\s\S]*\}", content)
-        raw_json = match.group(0) if match else content
-        storyboard = json.loads(raw_json)
+        storyboard = json.loads(match.group(0) if match else content)
         storyboard["topic"] = topic
-        print(
-            f"[FoundryLLM] Generated v7.5 Hybrid Storyboard '{storyboard.get('title')}' "
-            f"({len(storyboard.get('scenes', []))} beats, max_ai_cap={max_ai}) via {self.model}."
-        )
+        scenes = storyboard.get("scenes") or []
+        if not isinstance(scenes, list) or not scenes:
+            raise RuntimeError("Storyboard contained no scenes.")
+        for idx, scene in enumerate(scenes, 1):
+            scene["scene_id"] = int(scene.get("scene_id") or idx)
+            scene["narration"] = str(scene.get("narration") or "").strip()
+            scene["visual_subject"] = str(scene.get("visual_subject") or scene.get("wikimedia_query") or scene.get("video_query") or topic).strip()
+            scene["visual_keywords"] = scene.get("visual_keywords") or []
+            if scene.get("prefer_media") not in {"video_clip", "archival", "ai_image"}:
+                scene["prefer_media"] = "archival"
+        # Enforce budget independently of model compliance.
+        ai_left = max_ai
+        for scene in scenes:
+            if scene.get("prefer_media") == "ai_image" and ai_left > 0:
+                ai_left -= 1
+            elif scene.get("prefer_media") == "ai_image":
+                scene["prefer_media"] = "archival"
+        print(f"[FoundryLLM] Storyboard '{storyboard.get('title')}' ({len(scenes)} scenes; paid image cap={max_ai}).")
         return storyboard
 
     def verify_video_candidates(

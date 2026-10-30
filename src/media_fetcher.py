@@ -109,6 +109,8 @@ class MediaFetcher:
 
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
+        self.media_cache_dir = Path(os.getenv("MEDIA_CACHE_DIR", ".cache/media"))
+        self.media_cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.foundry_endpoint = (
             os.getenv("FOUNDRY_ENDPOINT")
@@ -125,10 +127,10 @@ class MediaFetcher:
         ).strip()
         self.pexels_key = (os.getenv("PEXELS_API_KEY") or "").strip()
 
-        # STRICT COST CAP: Default = ZERO paid AI images. Set MAX_AI_IMAGES_PER_SHORT explicitly to opt in.
+        # Strict hard cap: zero is a valid and preferred no-paid-image mode.
         try:
             self.max_ai_images = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "0")))
-        except ValueError:
+        except (TypeError, ValueError):
             self.max_ai_images = 0
 
         self.ai_images_used = 0
@@ -452,6 +454,16 @@ class MediaFetcher:
         url = cand.get("url", "")
         if not url or url in self.used_urls:
             return None
+        cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        cached_video = self.media_cache_dir / f"{cache_key}.mp4"
+        if cached_video.exists() and cached_video.stat().st_size > 4000:
+            import shutil
+            shutil.copy2(cached_video, dest_path)
+            if self._validate_video_clip_frames(dest_path):
+                self.used_urls.add(url)
+                self.attributions.append(f"• Video: {cand.get('title', 'Archival Video')} ({cand.get('license', 'Source licence to verify')})")
+                return dest_path
+            dest_path.unlink(missing_ok=True)
         dur = float(cand.get("duration", 12.0) or 12.0)
 
         if dur >= 25.0:
@@ -487,6 +499,8 @@ class MediaFetcher:
                 ]
                 proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=32)
                 if proc.returncode == 0 and self._validate_video_clip_frames(dest_path):
+                    import shutil
+                    shutil.copy2(dest_path, cached_video)
                     self.used_urls.add(url)
                     title = cand.get("title", "Archival Video")
                     lic = cand.get("license", "Public Domain / CC")
@@ -502,7 +516,7 @@ class MediaFetcher:
         video_q = scene.get("video_query", "").strip()
         narration = scene.get("narration", "").strip()
 
-        if (self.pexels_key and os.getenv("ALLOW_PEXELS_UNVERIFIED", "false").lower() == "true" and (pexels_q or video_q)):
+        if self.pexels_key and os.getenv("ALLOW_PEXELS_STOCK", "false").strip().lower() == "true" and (pexels_q or video_q):
             headers = {"Authorization": self.pexels_key}
             params = {"query": pexels_q or video_q, "per_page": 5, "size": "medium"}
             try:
@@ -527,30 +541,52 @@ class MediaFetcher:
                         dest_path.write_bytes(vid_r.content)
                         if self._validate_video_clip_frames(dest_path):
                             self.used_urls.add(vid_id)
-                            self.attributions.append(f"• Video: Pexels #{v.get('id')} — {link}")
+                            owner = (v.get("user") or {}).get("name", "Pexels contributor")
+                            owner_url = (v.get("user") or {}).get("url", "https://www.pexels.com/license/")
+                            self.attributions.append(f"• Pexels video by {owner} — {owner_url}")
                             return dest_path, f"Pexels HD ({pexels_q or video_q})"
                         dest_path.unlink(missing_ok=True)
             except Exception:
                 dest_path.unlink(missing_ok=True)
 
+        # Direct scene-level archive search is a fallback when the one-time topic verifier
+        # returns no candidates. These candidates still must pass strict lexical matching
+        # and the decoded-frame/motion validation gate before they can be used.
+        scene_candidates: List[Dict[str, Any]] = []
+        if video_q:
+            for search_fn in (self._search_prelinger_and_nara_videos, self._search_wikimedia_video_candidates):
+                try:
+                    scene_candidates.extend(search_fn(video_q, limit=4))
+                except Exception as exc:
+                    print(f"[MediaFetcher] Scene video search notice: {exc}")
+            if self.is_space_or_science:
+                try:
+                    scene_candidates.extend(self._search_nasa_video_candidates(video_q, limit=3))
+                except Exception:
+                    pass
+        unique_scene = {}
+        for candidate in scene_candidates:
+            if candidate.get("url") and candidate.get("url") not in self.used_urls:
+                unique_scene[candidate["url"]] = candidate
+        if unique_scene:
+            ranked_scene = sorted(unique_scene.values(), key=lambda c: self._relevance_score(c, self._scene_terms(scene)), reverse=True)
+            for candidate in ranked_scene:
+                if self._relevance_score(candidate, self._scene_terms(scene)) < 3:
+                    continue
+                saved = self._download_and_validate_video_clip(candidate, dest_path)
+                if saved:
+                    return saved, candidate.get("title", "Scene-matched archival video")
+
         unused_vids = [c for c in self.verified_video_pool if c.get("url") not in self.used_urls]
         if unused_vids:
-            context_words = {
-                w.lower() for w in re.findall(r"[A-Za-z0-9]{3,}", f"{video_q} {narration}")
-            }
-
-            stop = {"the", "and", "for", "with", "from", "into", "over", "under", "old", "new", "real", "video", "footage", "vintage", "historical"}
-            context_words = {w for w in context_words if w not in stop and len(w) >= 4}
+            context_words = self._scene_terms(scene)
 
             def score_vid(c: Dict[str, Any]) -> int:
-                text = f"{c.get('title', '')} {c.get('desc', '')}".lower()
-                return sum(3 for w in context_words if w in text)
+                return self._relevance_score(c, context_words)
 
-            ranked = sorted(unused_vids, key=score_vid, reverse=True)
-            for cand in ranked:
-                # Topic-level approval is not enough: require at least one meaningful
-                # scene-query/narration term to match the candidate's own metadata.
-                if context_words and score_vid(cand) == 0:
+            for cand in sorted(unused_vids, key=score_vid, reverse=True):
+                # A topic-level approval is not enough: require scene-level semantic overlap.
+                if score_vid(cand) < 3:
                     continue
                 saved = self._download_and_validate_video_clip(cand, dest_path)
                 if saved:
@@ -687,122 +723,99 @@ class MediaFetcher:
             pass
         return results
 
-    def fetch_scene_asset(
-        self, scene: dict, assets_dir: Path
-    ) -> Tuple[Path, str]:
-        """
-        v7.5 Hybrid Script-True & Cost-Capped (`MAX_AI_IMAGES_PER_SHORT = 4`) Selector:
-        1. Spends your 4 `MAI-Image-2.6-Flash` credits on Scene 1 (0.0s Hook) and designated literal action scenes
-           (`prefer == "ai_image"` or Scenes 1, 4, 7, 10).
-        2. Pulls LLM+CV-verified moving video clips (`video`) from `self.verified_video_pool` on video_clip scenes.
-        3. Pulls LLM+CV-verified archival photographs (`image`) from `self.verified_pool`.
-        4. If `verified_video_pool` and `verified_pool` are exhausted and the 4-AI-image cap is reached,
-           creates a distinct Noir Storyboard Focal Cut from one of the 100% script-true AI scenes (never pulling
-           unverified random Wikimedia junk and never exceeding your `max_ai_images` cost cap!).
-        """
+    @staticmethod
+    def _scene_terms(scene: Dict[str, Any]) -> Set[str]:
+        stop = {"this", "that", "with", "from", "into", "over", "were", "have", "their", "about", "after", "before", "during", "would", "could", "should", "there", "where", "when", "what", "which", "while", "then", "than", "they", "them", "your", "very", "more", "most", "some", "only", "story", "scene", "history", "historical", "photo", "video", "footage", "archive", "archival", "image"}
+        raw = " ".join([str(scene.get("visual_subject", "")), str(scene.get("video_query", "")), str(scene.get("wikimedia_query", "")), " ".join(map(str, scene.get("visual_keywords", [])))])
+        return {w.lower() for w in re.findall(r"[A-Za-z0-9]{3,}", raw) if w.lower() not in stop}
+
+    @classmethod
+    def _relevance_score(cls, candidate: Dict[str, Any], terms: Set[str]) -> int:
+        text = (str(candidate.get("title", "")) + " " + str(candidate.get("desc", ""))).lower()
+        if not terms or not text:
+            return 0
+        return sum(3 if term in str(candidate.get("title", "")).lower() else 1 for term in terms if term in text)
+
+    def fetch_scene_asset(self, scene: dict, assets_dir: Path) -> Tuple[Path, str]:
+        """Select only scene-relevant media. Never silently recycle an unrelated image."""
         assets_dir.mkdir(parents=True, exist_ok=True)
         scene_id = int(scene.get("scene_id", 1))
-        prefer = scene.get("prefer_media", "video_clip")
-        wiki_q = scene.get("wikimedia_query", "")
-        wp_article = scene.get("wikipedia_article", "")
-        img_prompt = scene.get("image_prompt", "").strip()
-        narration = scene.get("narration", "").strip()
+        narration = str(scene.get("narration", "")).strip()
+        terms = self._scene_terms(scene)
+        prefer = str(scene.get("prefer_media", "archival"))
+        can_use_ai = self.ai_images_used < self.max_ai_images and bool(self.foundry_endpoint and self.foundry_key)
 
-        can_use_ai = (
-            self.ai_images_used < self.max_ai_images
-            and bool(self.foundry_endpoint and self.foundry_key)
-        )
-
-        # 1. Designated AI Hook & Literal Key Beats (Scene 1 Hook + up to `self.max_ai_images` total)
-        is_priority_ai_beat = (prefer == "ai_image")
-        if is_priority_ai_beat and can_use_ai:
-            prompt = img_prompt or (
-                f"Authentic historical documentary photograph literally illustrating: '{narration}' ({self.topic}), "
-                "dramatic chiaroscuro cinema lighting, 35mm archival film grain, vertical 9:16, no text"
-            )
-            ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
+        # AI is a last-resort opt-in, never forced on the hook.
+        if prefer == "ai_image" and can_use_ai:
+            ai_img = self._generate_foundry_image(str(scene.get("image_prompt") or scene.get("visual_subject") or narration), assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.ai_generated_images.append(ai_img)
                 self.downloaded_scene_images.append(ai_img)
-                self.scene_audit_log.append({
-                    "scene_id": scene_id,
-                    "kind": f"🎨 AI IMAGE ({self.ai_images_used}/{self.max_ai_images})",
-                    "source": f"MAI-Image-2.6-Flash ({ai_img.name})",
-                    "narration": narration,
-                })
-                print(f"[MediaFetcher] Scene {scene_id:02d}: 🎨 AI IMAGE ({self.ai_images_used}/{self.max_ai_images} cap) -> {ai_img.name}")
+                self.scene_audit_log.append({"scene_id": scene_id, "kind": f"AI IMAGE ({self.ai_images_used}/{self.max_ai_images})", "source": ai_img.name, "narration": narration})
                 return ai_img, "image"
 
-        # 2. Try Strictly Verified Real Motion Video Clip
-        clip_res = self._pull_best_verified_video_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
-        if clip_res:
-            clip_path, clip_title = clip_res
-            self.video_clips_used += 1
-            self.scene_audit_log.append({
-                "scene_id": scene_id,
-                "kind": "🎬 VIDEO CLIP (FREE)",
-                "source": clip_title[:55],
-                "narration": narration,
-            })
-            print(f"[MediaFetcher] Scene {scene_id:02d}: 🎬 VERIFIED VIDEO CLIP -> {clip_path.name} ({clip_title[:45]})")
-            return clip_path, "video"
+        # Prefer real moving footage when the scene describes a physical action.
+        if prefer == "video_clip" or scene.get("video_query"):
+            clip_res = self._pull_best_verified_video_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
+            if clip_res:
+                clip_path, clip_title = clip_res
+                self.video_clips_used += 1
+                self.scene_audit_log.append({"scene_id": scene_id, "kind": "REAL VIDEO", "source": clip_title[:90], "narration": narration})
+                return clip_path, "video"
 
-        # 3. Try Strictly Verified Archival Photograph
-        pool_res = self._pull_best_from_verified_pool(
-            f"{wiki_q} {wp_article} {narration}",
-            assets_dir / f"scene_{scene_id:02d}_archival.jpg",
-        )
+        # Try already-approved topic pool, but require a real scene-level match.
+        pool_res = self._pull_best_from_verified_pool(" ".join(sorted(terms)), assets_dir / f"scene_{scene_id:02d}_archival.jpg", min_score=3)
         if pool_res:
             pool_img, photo_title = pool_res
             self.archival_photos_used += 1
             self.downloaded_scene_images.append(pool_img)
-            self.scene_audit_log.append({
-                "scene_id": scene_id,
-                "kind": "🏛️ ARCHIVAL PHOTO (FREE)",
-                "source": photo_title[:55],
-                "narration": narration,
-            })
-            print(f"[MediaFetcher] Scene {scene_id:02d}: 🏛️ VERIFIED ARCHIVAL PHOTO -> {pool_img.name} ({photo_title[:45]})")
+            self.scene_audit_log.append({"scene_id": scene_id, "kind": "ARCHIVAL PHOTO", "source": photo_title[:90], "narration": narration})
             return pool_img, "image"
 
-        # 4. If within our strict AI image cap (`self.ai_images_used < self.max_ai_images`), generate an AI scene
-        if can_use_ai and prefer == "ai_image":
-            prompt = img_prompt or (
-                f"Authentic historical documentary photograph literally illustrating: '{narration}' ({self.topic}), "
-                "dramatic cinema lighting, 35mm archival film grain, vertical 9:16, no text"
-            )
-            ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
+        # Scene-specific Commons search: the old global pool frequently left scenes with no suitable image.
+        queries = []
+        for q in (scene.get("wikimedia_query"), scene.get("visual_subject"), scene.get("video_query")):
+            q = str(q or "").strip()
+            if q and q not in queries:
+                queries.append(q)
+        candidates = []
+        seen = set()
+        for query in queries[:2]:
+            for cand in self._search_wikimedia_candidates(query, limit=5):
+                if cand.get("url") not in seen:
+                    seen.add(cand.get("url"))
+                    cand["id"] = f"scene_{scene_id}_{len(candidates)}"
+                    candidates.append(cand)
+        candidates.sort(key=lambda c: self._relevance_score(c, terms), reverse=True)
+        for cand in candidates:
+            if self._relevance_score(cand, terms) < 3:
+                continue
+            saved = self._download_and_register_image(cand.get("url", ""), assets_dir / f"scene_{scene_id:02d}_commons.jpg", cand.get("title", ""), cand.get("license", "CC"))
+            if saved:
+                self.archival_photos_used += 1
+                self.downloaded_scene_images.append(saved)
+                self.scene_audit_log.append({"scene_id": scene_id, "kind": "SCENE-MATCHED ARCHIVAL PHOTO", "source": cand.get("title", "Wikimedia Commons")[:90], "narration": narration})
+                return saved, "image"
+
+        # Last-resort AI image only when explicitly budgeted and credentials exist.
+        if can_use_ai:
+            ai_img = self._generate_foundry_image(str(scene.get("image_prompt") or scene.get("visual_subject") or narration), assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.ai_generated_images.append(ai_img)
                 self.downloaded_scene_images.append(ai_img)
-                self.scene_audit_log.append({
-                    "scene_id": scene_id,
-                    "kind": f"🎨 AI IMAGE ({self.ai_images_used}/{self.max_ai_images})",
-                    "source": f"MAI-Image-2.6-Flash ({ai_img.name})",
-                    "narration": narration,
-                })
-                print(f"[MediaFetcher] Scene {scene_id:02d}: 🎨 AI IMAGE ({self.ai_images_used}/{self.max_ai_images} cap) -> {ai_img.name}")
+                self.scene_audit_log.append({"scene_id": scene_id, "kind": f"AI IMAGE ({self.ai_images_used}/{self.max_ai_images})", "source": ai_img.name, "narration": narration})
                 return ai_img, "image"
 
-        # 5. Honest fallback: never reuse an unrelated image for a different historical beat.
-        # A scene-specific editorial card is preferable to visually misleading footage.
-        fallback_path = assets_dir / f"scene_{scene_id:02d}_fallback.jpg"
-        self._create_scene_fallback_card(
-            fallback_path,
-            scene.get("on_screen_callout") or scene.get("narration") or self.topic,
-            scene.get("historical_date") or "",
-        )
-        self.scene_audit_log.append({
-            "scene_id": scene_id,
-            "kind": "🗂️ SCENE-SPECIFIC FALLBACK CARD",
-            "source": "Generated locally; no paid image generation",
-            "narration": narration,
-        })
+        # Honest, designed editorial graphic rather than a blank/noisy black placeholder.
+        fallback_path = assets_dir / f"scene_{scene_id:02d}_editorial.jpg"
+        self._create_archival_fallback_card(fallback_path, scene=scene, topic=self.topic)
+        self.reframed_cuts_used += 1
+        self.scene_audit_log.append({"scene_id": scene_id, "kind": "EDITORIAL GRAPHIC (NO SOURCE MEDIA FOUND)", "source": "Locally rendered editorial card", "narration": narration})
         return fallback_path, "image"
 
-    def _pull_best_from_verified_pool(self, scene_context: str, dest_path: Path) -> Optional[Tuple[Path, str]]:
+    def _pull_best_from_verified_pool(self, scene_context: str, dest_path: Path, min_score: int = 3) -> Optional[Tuple[Path, str]]:
         context_words = {
             w.lower() for w in re.findall(r"[A-Za-z0-9]{4,}", scene_context)
         }
@@ -814,7 +827,10 @@ class MediaFetcher:
             text = f"{c.get('title', '')} {c.get('desc', '')}".lower()
             return sum(2 for w in context_words if w in text)
 
-        for cand in sorted(unused, key=score_cand, reverse=True):
+        ranked = sorted(unused, key=score_cand, reverse=True)
+        for cand in ranked:
+            if score_cand(cand) < min_score:
+                continue
             saved = self._download_and_register_image(
                 cand["url"], dest_path, cand.get("title", ""), cand.get("license", "Public Domain")
             )
@@ -830,9 +846,16 @@ class MediaFetcher:
         if ABSOLUTE_REJECT_PATTERNS.search(f"{title} {img_url}") or DISQUALIFYING_PATTERNS.search(img_url):
             return None
         try:
-            img_resp = self.session.get(img_url, timeout=25)
-            img_resp.raise_for_status()
-            content_bytes = img_resp.content
+            cache_key = hashlib.sha256(img_url.encode("utf-8")).hexdigest()
+            cached_image = self.media_cache_dir / f"{cache_key}.jpg"
+            if cached_image.exists() and cached_image.stat().st_size > 8000:
+                import shutil
+                shutil.copy2(cached_image, dest_path)
+                content_bytes = dest_path.read_bytes()
+            else:
+                img_resp = self.session.get(img_url, timeout=25)
+                img_resp.raise_for_status()
+                content_bytes = img_resp.content
             digest = hashlib.md5(content_bytes).hexdigest()
             if digest in self.used_hashes:
                 return None
@@ -848,12 +871,15 @@ class MediaFetcher:
                     dest_path.unlink(missing_ok=True)
                     return None
                 rgb.save(dest_path, quality=94)
+                if not cached_image.exists():
+                    import shutil
+                    shutil.copy2(dest_path, cached_image)
 
             self.used_urls.add(img_url)
             self.used_hashes.add(digest)
             if title:
                 clean_title = title.replace("File:", "")
-                self.attributions.append(f"• {clean_title} ({license_name})")
+                self.attributions.append(f"• {clean_title} ({license_name}) — {img_url}")
             return dest_path
         except Exception:
             dest_path.unlink(missing_ok=True)
@@ -936,39 +962,60 @@ class MediaFetcher:
             cropped.save(dest_path, quality=94)
 
     @staticmethod
-    def _create_scene_fallback_card(dest_path: Path, text: str, date_text: str = ""):
-        """Create a legible editorial interstitial instead of recycling unrelated imagery."""
+    def _create_archival_fallback_card(dest_path: Path, scene: Optional[Dict[str, Any]] = None, topic: str = "US History"):
+        """Render a designed editorial motion-graphic plate; do not fake archival imagery."""
         from PIL import ImageDraw, ImageFont
-        import textwrap
-
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        img = Image.new("RGB", (1080, 1920), (18, 22, 29))
-        draw = ImageDraw.Draw(img)
-        draw.rectangle((70, 610, 1010, 1310), outline=(178, 145, 83), width=3)
-        try:
-            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            font = ImageFont.truetype(font_path, 68)
-            small = ImageFont.truetype(font_path, 34)
-        except OSError:
-            font, small = ImageFont.load_default(), ImageFont.load_default()
-        if date_text:
-            draw.text((110, 690), str(date_text)[:45], fill=(218, 184, 112), font=small)
-        words = textwrap.wrap(str(text).strip(), width=22)[:7]
-        y = 800
-        for line in words:
-            draw.text((110, y), line, fill=(245, 245, 240), font=font)
-            y += 92
-        draw.text((110, 1450), "HISTORICAL ARCHIVE • VISUAL RECONSTRUCTION UNAVAILABLE",
-                  fill=(170, 175, 185), font=small)
+        w, h = 1080, 1920
+        scene = scene or {}
+        import numpy as np
+        yy, xx = np.mgrid[0:h, 0:w]
+        t = yy.astype(np.float32) / max(1, h - 1)
+        grain = ((xx * 17 + yy * 31) % 7).astype(np.int16) - 3
+        base = np.stack([16 - 5*t, 29 - 11*t, 43 - 17*t], axis=-1)
+        arr = np.clip(base + grain[..., None], 0, 255).astype(np.uint8)
+        img = Image.fromarray(arr, mode="RGB")
+        d = ImageDraw.Draw(img)
+        gold = (220, 174, 88); pale = (237, 239, 239); muted = (151, 166, 178)
+        def font(size, bold=False):
+            paths = ["/usr/share/fonts/truetype/montserrat/Montserrat-Bold.ttf" if bold else "/usr/share/fonts/truetype/montserrat/Montserrat-Medium.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+            for fp in paths:
+                try: return ImageFont.truetype(fp, size)
+                except Exception: pass
+            return ImageFont.load_default()
+        # Documentary frame / timeline motif.
+        d.rectangle((70, 100, 1010, 1820), outline=(71, 87, 99), width=2)
+        d.line((110, 260, 970, 260), fill=gold, width=5)
+        d.text((112, 155), "HISTORY FILE  /  VISUAL RECONSTRUCTION", font=font(27, True), fill=gold)
+        era = "  •  ".join(str(x) for x in (scene.get("visual_keywords") or [])[:3])
+        if not era: era = str(scene.get("visual_subject") or topic)
+        # Large abstract timeline/orbit graphic, not a fabricated photograph.
+        cx, cy = 540, 760
+        for rad, col, width in [(300,(49,68,83),3),(230,(65,82,94),2),(155,(85,99,106),2)]:
+            d.ellipse((cx-rad,cy-rad,cx+rad,cy+rad), outline=col, width=width)
+        d.ellipse((cx-18,cy-18,cx+18,cy+18), fill=gold)
+        d.line((cx-350,cy,cx+350,cy), fill=(55,73,86), width=2)
+        d.line((cx,cy-350,cx,cy+350), fill=(55,73,86), width=2)
+        d.text((115, 1160), "THE RECORD", font=font(34, True), fill=gold)
+        subject = str(scene.get("visual_subject") or topic).strip()
+        narration = str(scene.get("narration") or "").strip()
+        def wrap(text, fnt, max_width):
+            words=text.split(); lines=[]; cur=""
+            for word in words:
+                test=(cur+" "+word).strip()
+                if d.textbbox((0,0),test,font=fnt)[2] <= max_width: cur=test
+                else:
+                    if cur: lines.append(cur)
+                    cur=word
+            if cur: lines.append(cur)
+            return lines
+        y=1230
+        for line in wrap(subject.upper(), font(55, True), 820)[:3]:
+            d.text((115,y),line,font=font(55,True),fill=pale); y+=76
+        y += 24
+        for line in wrap(narration, font(31), 820)[:4]:
+            d.text((118,y),line,font=font(31),fill=muted); y+=48
+        d.line((115, 1650, 965, 1650), fill=(76,91,102), width=2)
+        d.text((115, 1690), "EDITORIAL GRAPHIC — NOT ARCHIVAL FOOTAGE", font=font(24, True), fill=gold)
+        d.text((115, 1750), "Authentic source media was not found for this beat.", font=font(22), fill=muted)
         img.save(dest_path, quality=94)
 
-    @staticmethod
-    def _create_archival_fallback_card(dest_path: Path):
-        w, h = 1080, 1920
-        arr = Image.effect_noise((w, h), 28).convert("RGB")
-        r, g, b = arr.split()
-        r = r.point(lambda i: int(i * 0.35 + 45))
-        g = g.point(lambda i: int(i * 0.30 + 38))
-        b = b.point(lambda i: int(i * 0.24 + 30))
-        img = Image.merge("RGB", (r, g, b)).filter(ImageFilter.GaussianBlur(radius=2))
-        img.save(dest_path, quality=92)

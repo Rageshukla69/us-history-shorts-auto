@@ -21,6 +21,7 @@ from media_fetcher import MediaFetcher
 from caption_builder import generate_synced_ass_captions
 from video_composer import VideoComposer
 from youtube_uploader import upload_short_to_youtube
+from quality_control import validate_rendered_short
 
 HISTORY_FILE = Path("data/upload_history.json")
 
@@ -108,7 +109,8 @@ def run_pipeline():
         generate_all_sfx()
 
     llm = FoundryLLMClient()
-    topic = select_next_topic(llm_client=llm)
+    custom_topic = os.getenv("CUSTOM_TOPIC", "").strip()
+    topic = custom_topic if custom_topic else select_next_topic(llm_client=llm)
 
     # Step 1: Storyboard & Physical Video Pool Queries via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
     storyboard = llm.generate_storyboard(topic)
@@ -136,6 +138,7 @@ def run_pipeline():
         asset_path, asset_type = fetcher.fetch_scene_asset(scene, temp_dir / "media")
         scene["asset_path"] = str(asset_path)
         scene["asset_type"] = asset_type
+        scene["asset_kind"] = fetcher.scene_audit_log[-1].get("kind", "UNKNOWN") if fetcher.scene_audit_log else "UNKNOWN"
 
     # Step 4: Generate Pro Creator Multi-Color Word-Synced Captions + Subscribe CTA (.ass)
     ass_path = output_dir / "subtitles.ass"
@@ -146,6 +149,10 @@ def run_pipeline():
     final_mp4 = output_dir / "final_short.mp4"
     composer.render_short(enriched_scenes, master_vo, ass_path, final_mp4, temp_dir / "segments")
 
+    # Step 6: Technical QC. A failed gate blocks upload, never silently publishes a poor render.
+    qc = validate_rendered_short(final_mp4, enriched_scenes, output_dir / "quality_report.json")
+    print(f"[QualityControl] PASS: {qc}")
+
     meta_path = output_dir / "metadata.json"
     meta_path.write_text(
         json.dumps(
@@ -153,7 +160,6 @@ def run_pipeline():
                 "topic": topic,
                 "title": storyboard.get("title"),
                 "description": storyboard.get("description"),
-                "research_sources": storyboard.get("research_sources", []),
                 "ai_images_used": fetcher.ai_images_used,
                 "max_ai_images_cap": fetcher.max_ai_images,
                 "video_clips_used": fetcher.video_clips_used,
@@ -162,39 +168,29 @@ def run_pipeline():
                 "scene_audit_log": fetcher.scene_audit_log,
                 "scenes": enriched_scenes,
                 "attributions": fetcher.attributions,
+                "sources": storyboard.get("sources", []),
+                "quality_control": qc,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
 
-    # Step 6: Upload to YouTube via `YOUTUBE_TOKEN_JSON` (skipped automatically when DRY_RUN=true)
-    base_description = storyboard.get("description", topic)
-    research_sources = storyboard.get("research_sources", [])
-    source_lines = []
-    for source in research_sources[:8]:
-        if isinstance(source, dict):
-            source_title = str(source.get("title") or "Historical source").strip()
-            source_url = str(source.get("url") or "").strip()
-            if source_url.startswith(("https://", "http://")):
-                source_lines.append(f"- {source_title}: {source_url}")
-        elif isinstance(source, str) and source.startswith(("https://", "http://")):
-            source_lines.append(f"- {source}")
-    if source_lines:
-        base_description += "\\n\\nResearch references:\\n" + "\\n".join(source_lines)
 
+    # Step 7: Upload to YouTube (only after QC; DRY_RUN=true skips upload).
     video_id = upload_short_to_youtube(
         video_path=final_mp4,
         title=storyboard.get("title", topic),
-        description=base_description,
+        description=storyboard.get("description", topic),
         tags=storyboard.get("tags", ["history", "shorts", "ushistory"]),
         attributions=fetcher.attributions,
+        sources=storyboard.get("sources", []),
     )
 
-    # Step 7: Write Visual & Cost Audit Table to GitHub Actions Run Summary (`$GITHUB_STEP_SUMMARY`)
+    # Step 8: Write Visual & Cost Audit Table to GitHub Actions Run Summary (`$GITHUB_STEP_SUMMARY`)
     _write_github_step_summary(topic, storyboard.get("title", topic), fetcher, video_id)
 
-    # Step 8: Mark topic as used and push immediately to GitHub
+    # Step 9: Mark topic as used and push immediately to GitHub
     if video_id != "dry_run_id":
         mark_topic_completed(topic, video_id=video_id, title=storyboard.get("title", topic))
     print(f"[Pipeline] Completed v7.5 run for topic: '{topic}' (video_id={video_id})")
