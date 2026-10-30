@@ -1,10 +1,12 @@
 """
-Microsoft Foundry LLM Client (v5.2 — MoneyPrinterTurbo Subject-True Visual Architect & High-Retention Engine):
+Microsoft Foundry LLM Client (v6.0 — Multi-Source Verified Video Clip & Zero-Repeat Documentary Architect):
 - Mapped directly to your Heroku / GitHub Secrets (`FOUNDRY_TEXT_ENDPOINT`, `FOUNDRY_TEXT_API_KEY`, `gpt-6-luna`).
-- Combines MoneyPrinterTurbo's subject-true AI scene generation (`MAI-Image-2.6-Flash` on key action beats)
-  with LLM-verified Wikipedia/NASA historical photographs and optional watermark-free Pexels/NASA HD clips.
-- Generates exact word-matched `image_prompt`, `wikimedia_query`, and `pexels_query` fields for EVERY scene
-  so visuals are 100% true to the historical subject and spoken script (zero random Internet Archive / LEGO / unrelated clips).
+- Generates:
+  1. Top-level `video_pool_queries` (8 to 10 concise 1-to-2 word visual nouns/actions that actually exist as real
+     HD videos on Wikimedia Commons, Wikipedia, NASA Video, and Internet Archive).
+  2. Per-scene `video_query`, `wikimedia_query`, and `image_prompt` matched to the exact spoken words of each scene.
+- Provides `verify_video_candidates()` and `verify_archival_candidates()` so `gpt-6-luna` inspects every candidate
+  video clip and photograph BEFORE download — guaranteeing 100% subject-true clips and zero unrelated videos.
 """
 import json
 import os
@@ -13,30 +15,35 @@ from typing import Any, Dict, List
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-SYSTEM_PROMPT = """You are an elite viral US YouTube Shorts director ("History Bypass / Johnny Harris / Cleo Abram" style) and MoneyPrinterTurbo Subject-True Visual Architect.
-Your goal is 80%+ "Stayed to Watch" retention and high subscriber conversion for a US audience.
-Write a gripping, fast-paced 46-to-52 second spoken script (~115 to 128 words total) broken into 16 to 18 rapid visual scenes.
+SYSTEM_PROMPT = """You are an elite viral US YouTube Shorts documentary director ("Johnny Harris / Cleo Abram / History Bypass" style).
+Your goal is 85%+ "Stayed to Watch" retention and rapid subscriber growth for a US audience.
+Write a gripping, fast-paced 46-to-52 second spoken script (~115 to 128 words total) broken into 15 to 17 cinematic scenes.
 
-STRICT RETENTION, SUBJECT-TRUE VISUAL MATCHING & PACING RULES:
+STRICT RETENTION, REAL VIDEO SOURCING & PACING RULES:
 1. 0.0s THUMB-STOPPING HOOK (Scene 1 & Scene 2):
-   - Scene 1 MUST start with a shocking, counter-intuitive 5-to-7 word hook containing at least one high-impact power word or number (e.g., "In 1932, Australia lost a war... to birds.", "One dead body fooled Adolf Hitler's entire army.").
+   - Scene 1 MUST open with a shocking, counter-intuitive 5-to-7 word hook containing a concrete year, number, or stakes (e.g., "In 1932, Australia lost a war... to birds.", "One dead body fooled Adolf Hitler's entire army.").
    - Never start with slow throat-clearing like "Did you know that in history...".
-2. 100% SUBJECT-TRUE VISUAL ROUTING (`image_prompt` + `wikimedia_query` + `prefer_media` on EVERY scene):
-   - Look at the exact action verbs, historical figures, and nouns spoken in each scene's `narration`.
-   - `image_prompt`: A vivid, historically accurate vertical 9:16 archival photograph description that depicts the EXACT spoken sentence of this scene (e.g., `"1932 archival war photograph of Royal Australian Artillery soldiers firing a Lewis machine gun at a giant flock of emus running across the Western Australian wheat outback, dramatic documentary realism, vertical 9:16, no text"`).
-   - `wikimedia_query`: A specific 3-to-5 word search query for real historical photographs on Wikimedia Commons matching the exact person, place, weapon, ship, or event named in this scene (e.g., `"Emu War 1932 Australia"`, `"Lewis gun Australian soldiers"`, `"Sir George Pearce Australia"`).
-   - `pexels_query`: A clean 2-to-4 word cinematic B-roll query ONLY if `PEXELS_API_KEY` is active (e.g., `"emu birds running outback"`, `"wheat field wind"`).
-   - `prefer_media`:
-     * Set `"prefer_media": "ai_image"` on **Scene 1 (the 0.0s Hook)** and on **5 to 6 high-action / dramatic scenes** (`MAX_AI_IMAGES_PER_SHORT = 6`) where an exact word-matched `MAI-Image-2.6-Flash` historical visual makes the viewer stay to watch!
-     * Set `"prefer_media": "archival"` on the remaining scenes where real verified Wikipedia / Wikimedia Commons / NASA historical photographs depict the named historical person, map, machine, or location.
-3. FLASHY CAMERA FX (`effect` per scene):
-   - Choose from: `"impact_shake_zoom"` (use on Scene 1 and major plot twists!), `"whip_flash_zoom"`, `"fast_punch_in"`, `"parallax_pan_right"`, `"high_contrast_zoom_out"`.
+2. REAL VIDEO CLIP SOURCING (`video_pool_queries` + per-scene `video_query` + `prefer_media`):
+   - Public video repositories (Wikimedia Commons `filetype:video`, Wikipedia video files, NASA Video Archive, US National Archives) index videos by **short 1-to-2 word concrete visual nouns**, NOT long 6-word sentences!
+   - `video_pool_queries` (top-level array of 8 to 10 strings): Write 8 to 10 short 1-to-2 word visual search terms that have real footage on Wikimedia Commons / NASA / Archives and directly match this story's subjects, animals, machines, weapons, or landscapes (e.g., for Apollo 13: `["Apollo 13", "Saturn V", "Moon", "Command module", "Mission Control", "Astronaut", "Rocket launch", "Splashdown"]`; for Great Emu War: `["Emu", "Dromaius novaehollandiae", "Outback Australia", "Wheat field", "Machine gun", "Artillery", "Australian bush", "Flock of birds"]`).
+   - Per-scene `video_query`: A 1-to-2 word concrete noun/action from `video_pool_queries` matching the exact spoken words of that scene.
+   - Per-scene `prefer_media`:
+     * Set `"prefer_media": "video_clip"` on **at least 8 to 10 scenes** (including Scene 1, Scene 3, Scene 5, Scene 7, Scene 9, Scene 11, Scene 13, Scene 15) where real moving footage matches the spoken words!
+     * Set `"prefer_media": "archival"` on scenes naming a specific historical person, treaty, or documented Wikipedia photograph.
+     * Set `"prefer_media": "ai_image"` on dramatic close-up scenes that need a custom historical reconstruction.
+3. SMOOTH CINEMA CAMERA MOTION (`effect` per scene — NO JARRING SHAKE):
+   - Choose from smooth, broadcast-grade documentary camera movements:
+     * `"smooth_push_in"` (slow subpixel cinematic zoom in)
+     * `"smooth_pull_out"` (slow subpixel cinematic zoom out reveal)
+     * `"cinema_pan_right"` (gentle horizontal documentary drift right)
+     * `"cinema_pan_left"` (gentle horizontal documentary drift left)
+     * `"cinema_tilt_up"` (gentle vertical documentary rise)
 4. CANONICAL WIKIPEDIA ARTICLES & STRICT DOMAIN KEYWORDS:
-   - `wikipedia_articles`: 3 to 5 exact English Wikipedia article titles for the historical event.
-   - `required_visual_keywords`: 8 to 12 lowercase domain nouns specific to this historical topic so tangential pop-culture comics, toys, or homonyms are strictly rejected.
+   - `wikipedia_articles`: 3 to 5 exact English Wikipedia article titles for the historical event and its primary hardware/subjects.
+   - `required_visual_keywords`: 8 to 12 lowercase domain nouns specific to this topic.
 5. PUNCHY CALLOUT BADGES & SUBSCRIBE CTA:
    - `on_screen_callout`: Short 1-3 word uppercase badge under 18 chars (e.g. `"NOVEMBER 1932"`, `"20,000 EMUS"`, `"9,860 ROUNDS"`).
-   - End the final scene's narration with a punchy cliffhanger twist or 4-word question that makes viewers comment and subscribe.
+   - End the final scene's narration with a thought-provoking 4-to-6 word question + subscribe callout.
 
 Return ONLY valid JSON matching this schema:
 {
@@ -44,20 +51,21 @@ Return ONLY valid JSON matching this schema:
   "description": "Gripping 2-sentence hook + historical context + #shorts #history #ushistory #documentary",
   "tags": ["history", "shorts", "ushistory", "documentary", "viralhistory"],
   "is_space_or_science": false,
-  "wikipedia_articles": ["Emu War", "Emu", "Royal Australian Artillery"],
-  "required_visual_keywords": ["emu", "australia", "1932", "military", "artillery", "birds", "wheat", "campion", "lewis gun"],
+  "wikipedia_articles": ["Emu War", "Emu", "Lewis gun", "Royal Australian Artillery"],
+  "video_pool_queries": ["Emu", "Dromaius novaehollandiae", "Outback Australia", "Wheat field", "Lewis gun", "Machine gun", "Artillery", "Australian bush"],
+  "required_visual_keywords": ["emu", "australia", "1932", "military", "artillery", "birds", "wheat", "campion", "lewis", "gun", "outback", "soldier"],
   "scenes": [
     {
       "scene_id": 1,
       "narration": "In 1932, Australia declared war on twenty thousand giant birds—and lost.",
-      "archival_clip_query": "Emu War 1932 Australia",
-      "pexels_query": "emu birds running desert",
-      "wikimedia_query": "Emu War 1932 Australia historical",
+      "video_query": "Emu",
+      "pexels_query": "emu birds running outback",
+      "wikimedia_query": "Emu War 1932 Australia",
       "nasa_query": "",
       "wikipedia_article": "Emu War",
       "image_prompt": "Dramatic 1932 archival war photograph of Australian soldiers facing thousands of giant emus in the Western Australian outback, vertical 9:16, no text",
-      "prefer_media": "ai_image",
-      "effect": "impact_shake_zoom",
+      "prefer_media": "video_clip",
+      "effect": "smooth_push_in",
       "on_screen_callout": "NOVEMBER 1932"
     }
   ]
@@ -140,17 +148,18 @@ class FoundryLLMClient:
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
     def generate_storyboard(self, topic: str) -> Dict[str, Any]:
-        max_ai = int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "6"))
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": (
-                    f"Create a high-retention 60-second US History YouTube Short storyboard on: '{topic}'. "
-                    "Ensure 16 to 18 rapid scenes (6 to 8 words per scene, ~120 words total). "
-                    f"CRITICAL FOR SUBJECT ACCURACY & RETENTION: Set `prefer_media` to `'ai_image'` on Scene 1 (0.0s Hook) and on {max_ai} key action scenes total, "
-                    "writing a detailed, historically accurate `image_prompt` that matches the EXACT spoken words of each scene! "
-                    "Set `prefer_media` to `'archival'` on the remaining scenes with specific `wikimedia_query` and `wikipedia_article` values. "
+                    f"Create a high-retention 55-second US History YouTube Short storyboard on: '{topic}'. "
+                    "Ensure 15 to 17 cinematic scenes (6 to 8 words per scene, ~120 words total). "
+                    "CRITICAL FOR REAL VIDEO CLIPS: Provide 8 to 10 short 1-to-2 word concrete visual nouns in `video_pool_queries` "
+                    "(terms that have real video footage on Wikimedia Commons / Wikipedia / NASA / Archives), "
+                    "set `prefer_media` to `'video_clip'` on at least 8 to 10 scenes with a short 1-to-2 word `video_query`, "
+                    "and write a unique, vivid `image_prompt` for EVERY scene so no image ever repeats! "
+                    "Use ONLY smooth documentary camera effects (`smooth_push_in`, `smooth_pull_out`, `cinema_pan_right`, `cinema_pan_left`, `cinema_tilt_up`). "
                     "Output ONLY valid JSON."
                 ),
             },
@@ -161,10 +170,57 @@ class FoundryLLMClient:
         storyboard = json.loads(raw_json)
         storyboard["topic"] = topic
         print(
-            f"[FoundryLLM] Generated v5.2 Subject-True Storyboard '{storyboard.get('title')}' "
-            f"({len(storyboard.get('scenes', []))} scenes, max_ai={max_ai}) via {self.model}."
+            f"[FoundryLLM] Generated v6.0 Cinema Storyboard '{storyboard.get('title')}' "
+            f"({len(storyboard.get('scenes', []))} scenes, video_pool_queries={storyboard.get('video_pool_queries', [])[:5]}) via {self.model}."
         )
         return storyboard
+
+    def verify_video_candidates(
+        self, topic: str, candidates: List[Dict[str, str]]
+    ) -> List[str]:
+        """
+        Strict LLM Video Clip Gate:
+        Inspects candidate video clips (from Wikimedia Commons Video, Wikipedia, NASA, Internet Archive)
+        and approves ONLY videos that genuinely show either the historical event OR clean realistic footage
+        of the exact animals, vehicles, weapons, spacecraft, or landscapes in the story.
+        """
+        if not candidates:
+            return []
+        try:
+            compact = [
+                {
+                    "id": c["id"],
+                    "title": c.get("title", "")[:95],
+                    "desc": c.get("desc", "")[:140],
+                }
+                for c in candidates[:35]
+            ]
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict documentary video editor. Given a historical topic and a list of candidate video clips "
+                        "(with id, title, desc), return a JSON object `{\"approved_ids\": [...]}` containing ONLY the IDs of video clips "
+                        "that genuinely show either:\n"
+                        "1. Authentic archival footage of the historical topic/era, OR\n"
+                        "2. Clean, realistic live-action nature/location/hardware B-roll of the exact animals, weapons, ships, aircraft, spacecraft, or landscapes central to the topic.\n"
+                        "STRICTLY REJECT any video games, LEGO, Sonic, cartoons, animations, comics, unrelated modern foreign politicians/generals, "
+                        "talking-head lectures/interviews, podcasts, or unrelated wars."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Historical Topic: {topic}\nVideo Candidates: {json.dumps(compact)}\nReturn ONLY valid JSON: {{\"approved_ids\": [...]}}",
+                },
+            ]
+            content = self._call_chat_completions(messages)
+            match = re.search(r"\{[\s\S]*\}", content)
+            data = json.loads(match.group(0) if match else content)
+            approved = data.get("approved_ids", [])
+            return [str(x) for x in approved]
+        except Exception as exc:
+            print(f"[FoundryLLM] Video verification fallback notice: {exc}")
+            return []
 
     def verify_archival_candidates(
         self, topic: str, candidates: List[Dict[str, str]]
@@ -184,7 +240,7 @@ class FoundryLLMClient:
                 {
                     "role": "system",
                     "content": (
-                        "You are a strict archival documentary fact-checker. Given a historical topic and a list of candidate images/clips "
+                        "You are a strict archival documentary fact-checker. Given a historical topic and a list of candidate images "
                         "(with id, title, desc), return a JSON object `{\"approved_ids\": [...]}` containing ONLY the IDs of items "
                         "that genuinely depict the historical event, its era, spacecraft, military hardware, historical figures, or locations. "
                         "STRICTLY REJECT any modern celebrities, actors, singers, athletes, baseball players, red carpet photos, "

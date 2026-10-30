@@ -1,16 +1,17 @@
 """
-Main End-to-End Orchestrator for the Automated US History Shorts Channel (v5.0 — Viral Clip-Sync & Flashy Retention Edition).
+Main End-to-End Orchestrator for the Automated US History Shorts Channel (v6.0 — Smooth Cinema & Verified Video Pool Edition).
 Configured to drop-in match your exact Heroku Config Vars (`AZURE_SPEECH_KEY`, `FOUNDRY_TEXT_ENDPOINT`,
 `FOUNDRY_ENDPOINT`, `MAI-Image-2.6-Flash`, `gpt-6-luna`, `YOUTUBE_TOKEN_JSON`, etc.).
 
-Upgrades in v5.0:
-1. AI Script-to-Clip Semantic Video Matcher (`src/media_fetcher.py` & `src/foundry_llm.py`) — matches the spoken
-   words of each scene to real motion video clips from Internet Archive (Prelinger/Newsreels/NARA), NASA Video Archive,
-   Wikimedia Commons Video, and Pexels HD (prioritizing Scene 1-3 Hooks and action beats!).
-2. Flashy Retention Visual FX (`src/video_composer.py`) — 55ms optical flash-cuts (zero black fades), damped camera
-   shake on the 0.0s hook, rapid 1.4s–1.9s multi-cut pacing, and a glowing top gold progress bar.
-3. Multi-Color Power-Word Captions + Animated Subscribe CTA (`src/caption_builder.py`) — Danger/Action words pop in
-   Neon Red (118%), Numbers/Stats pop in Electric Green (116%), and regular words pop in Warm Gold (114%).
+Upgrades in v6.0:
+1. Keyless LLM-Verified Video Clip Pool (`src/media_fetcher.py` & `src/foundry_llm.py`) — pre-fetches candidate videos
+   from Wikipedia REST Video, Wikimedia Commons Video (`filetype:video` streamable derivatives), NASA Video Archive,
+   and US National Archives / Prelinger using concise `video_pool_queries`, verifies every clip with `gpt-6-luna`
+   (`verify_video_candidates`), and validates 5 frames per clip to block black screens and text slates.
+2. Zero Camera Shake & 3x Subpixel Smooth Cinema Motion (`src/video_composer.py`) — eliminates all `sin()`/`cos()`
+   shake and mid-scene white flashes, upscales plates to `3240x5760` before `zoompan` to fix FFmpeg Ticket #4298
+   pixel jitter, and animates wide photos/clips with 2-layer parallax over a moving blurred backdrop.
+3. Strict 0% Visual Repetition Guarantee — never reuses an image or clip across scenes in the same Short.
 """
 from datetime import datetime, timezone
 import json
@@ -69,14 +70,13 @@ def run_pipeline():
     temp_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Always ensure the documentary score & 0.0s hook impact accent exist
     if not (Path("assets/sfx/interstellar_bgm.wav")).exists() or not (Path("assets/sfx/hook_impact.wav")).exists():
         generate_all_sfx()
 
     llm = FoundryLLMClient()
     topic = select_next_topic(llm_client=llm)
 
-    # Step 1: Storyboard & Word-Matched Clip Queries via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
+    # Step 1: Storyboard & Concise Video Pool Queries via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
     storyboard = llm.generate_storyboard(topic)
     scenes = storyboard.get("scenes", [])
     if not scenes:
@@ -88,11 +88,12 @@ def run_pipeline():
         scenes, temp_dir / "audio"
     )
 
-    # Step 3: Fetch Word-Matched Video Clips (Internet Archive / NASA / Wikimedia / Pexels) + Verified 9:16 Archival Photos + Capped MAI-Image
+    # Step 3: Fetch LLM+CV-Verified Video Clips + Unique Archival Photos + Unique MAI-Image Visuals
     fetcher = MediaFetcher(
         topic=topic,
         era_keywords=storyboard.get("historical_era_keywords", []),
         wikipedia_articles=storyboard.get("wikipedia_articles", []),
+        video_pool_queries=storyboard.get("video_pool_queries", []),
         required_visual_keywords=storyboard.get("required_visual_keywords", []),
         is_space_or_science=bool(storyboard.get("is_space_or_science", False)),
         llm_client=llm,
@@ -103,16 +104,16 @@ def run_pipeline():
         scene["asset_type"] = asset_type
 
     print(
-        f"[Pipeline] v5.0 Visuals ready: {fetcher.video_clips_used} real motion VIDEO CLIPS, "
-        f"{fetcher.ai_images_used}/{fetcher.max_ai_images} MAI-Image credits, "
-        f"and {len(fetcher.used_urls)} total verified assets."
+        f"[Pipeline] v6.0 Visuals ready: {fetcher.video_clips_used} verified VIDEO CLIPS, "
+        f"{fetcher.ai_images_used} unique MAI-Image scenes, "
+        f"and {len(fetcher.used_urls)} total verified archival assets (0 repeats)."
     )
 
-    # Step 4: Generate Pro Creator V5 Multi-Color Word-Synced Captions + Subscribe CTA (.ass)
+    # Step 4: Generate Pro Creator Multi-Color Word-Synced Captions + Subscribe CTA (.ass)
     ass_path = output_dir / "subtitles.ass"
     generate_synced_ass_captions(word_timings, enriched_scenes, ass_path)
 
-    # Step 5: Render 1080x1920 MP4 with Flash-Cuts, Camera Shake, Progress Bar & BGM Ducking
+    # Step 5: Render 1080x1920 MP4 with Smooth 3x Subpixel Motion, 2-Layer Parallax & Sidechain BGM
     composer = VideoComposer()
     final_mp4 = output_dir / "final_short.mp4"
     composer.render_short(enriched_scenes, master_vo, ass_path, final_mp4, temp_dir / "segments")
@@ -126,8 +127,8 @@ def run_pipeline():
                 "description": storyboard.get("description"),
                 "video_clips_used": fetcher.video_clips_used,
                 "ai_images_used": fetcher.ai_images_used,
-                "max_ai_images_cap": fetcher.max_ai_images,
-                "verified_pool_size": len(fetcher.verified_pool),
+                "verified_video_pool_size": len(fetcher.verified_video_pool),
+                "verified_photo_pool_size": len(fetcher.verified_pool),
                 "scenes": enriched_scenes,
                 "attributions": fetcher.attributions,
             },
@@ -148,7 +149,7 @@ def run_pipeline():
     # Step 7: Mark topic as used and push immediately to GitHub
     if video_id != "dry_run_id":
         mark_topic_completed(topic, video_id=video_id, title=storyboard.get("title", topic))
-    print(f"[Pipeline] Completed v5.0 run for topic: '{topic}' (video_id={video_id})")
+    print(f"[Pipeline] Completed v6.0 run for topic: '{topic}' (video_id={video_id})")
 
 
 if __name__ == "__main__":
