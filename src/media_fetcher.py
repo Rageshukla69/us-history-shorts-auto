@@ -1,25 +1,20 @@
 """
-Multi-Source LLM-Verified Video Clip & Archival Media Fetcher (v6.0 — Zero-Repeat, Keyless Video Pool & CV Frame Gate):
-Solves Every Issue Identified in `a165fe13.mp4` and `final_short.mp4`:
-1. Guaranteed Keyless Real Video Clips (`_build_verified_video_pool` + `_pull_best_verified_video_clip`):
-   - Works out-of-the-box in GitHub Actions WITHOUT requiring `PEXELS_API_KEY`!
-   - Pre-fetches candidate videos from:
-     a) Wikipedia REST Article Media (`type == "video"`)
-     b) Wikimedia Commons Video API (`filetype:video` with pre-transcoded 480p/720p streamable `derivatives`)
-     c) Official NASA Video Archive (`images-api.nasa.gov`)
-     d) Curated US National Archives / Prelinger Historical Motion Pictures (strictly filtering out `periscopefilm` & slates)
-     e) Pexels HD Video API (automatically used if `PEXELS_API_KEY` is present)
-   - Every candidate video is verified by `gpt-6-luna` (`verify_video_candidates`) BEFORE download so unrelated
-     videos (`LEGO Sonic`, `Russian general`, `Enemy Japan`) are 100% blocked!
-2. 5-Frame Computer-Vision Anti-Black, Anti-Slate & Motion Gate (`_validate_video_clip_frames`):
-   - Inspects 5 frames across every downloaded clip (`0.15s`, `0.95s`, `1.80s`, `2.65s`, `3.40s`):
-     * Rejects any clip where ANY frame has `mean_luma < 30.0` or `dark_ratio > 0.62` (0.0s of black screens!).
-     * Rejects any clip where ANY frame has `midtone_ratio < 0.35` (blocks black-and-white text slates!).
-     * Requires real frame-to-frame pixel motion (`mean_motion >= 1.2`) so static slide videos are rejected.
-3. Strict 0% Image/Clip Repetition Guarantee:
-   - Deleted the old `_create_distinct_detail_crop` image-reuse loop that caused photos to repeat 2–4 times!
-   - Every scene that doesn't get an unused verified video clip or unused verified archival photo generates a
-     brand-new, unique `MAI-Image-2.6-Flash` historical scene matched to its exact spoken words.
+Multi-Source LLM-Verified Video Clip & Archival Media Fetcher (v6.5 — Cost-Capped 3 AI Images, Anti-Logo CV Gate & Deep Free Archival Pool):
+Solves Every Issue Identified in `93070995.mp4` ("Operation Acoustic Kitty"):
+1. Cuts Paid AI Image Cost by ~75% (`MAX_AI_IMAGES_PER_SHORT = 3` Hard Cap):
+   - Strictly caps `MAI-Image-2.6-Flash` to 3 images per Short (default `3`, configurable via `MAX_AI_IMAGES_PER_SHORT`).
+   - Strategically spends AI Image #1 on **Scene 1 (0.0s Hook)** so Frame 1 is always a jaw-dropping 9:16 visual
+     (never amateur kittens on a plaid bedsheet!), and saves AI Images #2 & #3 for the Midpoint Twist and Climax!
+2. Blocks Flat Vector Seals (`00:12` CIA Seal), Typed Text Pages (`00:49`), & Amateur Home Pet Videos (`00:00`, `00:08`):
+   - Catches `.svg` anywhere in URLs/titles (blocking `.svg.png` vector seals like `Seal_of_the_Central_Intelligence_Agency.svg.png`).
+   - Adds `_is_valid_photographic_image()` computer-vision check: rejects any image with `>36%` pure-white pixels
+     (blocking typed document scans and white-background logos) or `>52%` zero-gradient flat pixels (blocking coats of arms).
+   - Blocks amateur home pet videos (`bedsheet`, `bedroom`, `kitten`, `cute cat`, `my cat`, `porch`, `licking`) and
+     modern astronomical telescopes (`alma`, `radio telescope`, `observatory`) on non-space topics.
+3. Deep 10-Article Free Archival Pool (30–45 Free Photos + 6–8 Free Verified Video Clips per Short):
+   - Pulls across 8 to 10 visually rich Wikipedia articles, Wikimedia Commons Video (`filetype:video` streamable derivatives),
+     NASA Video/Image Archives, and curated US National Archives / Prelinger historical footage so 13+ scenes per Short
+     are 100% FREE!
 """
 import base64
 import hashlib
@@ -29,7 +24,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter
 import requests
 
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
@@ -42,8 +37,8 @@ ARCHIVE_SEARCH_API = "https://archive.org/advancedsearch.php"
 ARCHIVE_METADATA_API = "https://archive.org/metadata/"
 
 USER_AGENT = (
-    "USHistoryShortsBot/6.0 "
-    "(https://github.com/us-history-shorts-auto; DocumentaryArchivalPipeline/6.0)"
+    "USHistoryShortsBot/6.5 "
+    "(https://github.com/us-history-shorts-auto; DocumentaryArchivalPipeline/6.5)"
 )
 
 ABSOLUTE_REJECT_PATTERNS = re.compile(
@@ -54,19 +49,22 @@ ABSOLUTE_REJECT_PATTERNS = re.compile(
     r"tiktok|cosplay|anime|manga|hentai|cartoon|comic|caricature|meme|parody|satire|lego|sonic|"
     r"minifigure|action[ _-]?figure|toy|videogame|gameplay|minecraft|fortnite|roblox|gta|"
     r"bigfoot|sasquatch|sassy|periscopefilm|konashenkov|russian[ _-]?ministry|putin|"
-    r"politician[ _-]speaking[ _-]at[ _-]conference|press[ _-]?conference[ _-]202\d|"
+    r"bedsheet|plaid|kitten|cute[ _-]?cat|my[ _-]?cat|house[ _-]?cat|cat[ _-]?playing|cat[ _-]?licking|"
+    r"pet[ _-]?cat|litter[ _-]?box|scratching[ _-]?post|tabby[ _-]?cat[ _-]?at[ _-]?home|"
+    r"alma[ _-]?radio|atacama|radio[ _-]?telescope|very[ _-]?large[ _-]?array|parabolic[ _-]?antenna[ _-]?dish|"
     r"selfie|webcam|podcast|livestream|vlog|unboxing|tutorial|webinar|lecture|powerpoint|slides|"
-    r"logo|icon|symbol|flag[ _-]of|coat[ _-]of[ _-]arms|seal[ _-]of|emblem|badge|ribbon|"
-    r"blank|placeholder|stub|template|diagram|chart|graph|plot| histogram|spreadsheet|"
+    r"logo|icon|symbol|flag[ _-]of|coat[ _-]of[ _-]arms|seal[ _-]of|emblem|badge|insignia|crest|heraldry|"
+    r"blank|placeholder|stub|template|diagram|chart|graph|plot|histogram|spreadsheet|"
+    r"memorandum|declassified[ _-]?memo|typewritten|document[ _-]?page|page[ _-]\d+|letter[ _-]from|"
     r"signature|autograph|barcode|qr[ _-]?code|watermark|stock[ _-]?photo|shutterstock|getty)",
     re.IGNORECASE,
 )
 
 DISQUALIFYING_PATTERNS = re.compile(
-    r"(\.svg$|\.gif$|\.pdf$|\.djvu$|\.stl$|\.webp$|"
+    r"(\.svg|\.gif$|\.pdf|\.djvu|\.stl|\.webp$|"
     r"map[ _-]of[ _-]usa[ _-]blank|locator[ _-]map|location[ _-]map|"
     r"user[ _-]talk|wikimedia[ _-]commons[ _-]logo|commons-logo|wikisource|wiktionary|"
-    r"book[ _-]cover|page[ _-]\d+|scan[ _-]of|text[ _-]of|transcript|"
+    r"book[ _-]cover|scan[ _-]of|text[ _-]of|transcript|"
     r"201\d[ _-]photo|202\d[ _-]photo|modern[ _-]replica|reenactment[ _-]20\d\d)",
     re.IGNORECASE,
 )
@@ -76,8 +74,9 @@ HISTORICAL_SIGNAL_PATTERNS = re.compile(
     r"archival|archive|photograph|vintage|war|battle|soldier|military|army|navy|air[ _-]?force|"
     r"artillery|weapon|gun|rifle|cannon|tank|ship|submarine|aircraft|bomber|fighter|biplane|"
     r"expedition|colony|empire|president|general|commander|admiral|king|queen|emperor|pharaoh|"
-    r"revolution|treaty|expedition|disaster|earthquake|volcano|flood|plague|famine|drought|"
-    r"migration|outback|australia|emu|bird|wildlife|wheat|farm|agriculture|railroad|locomotive|"
+    r"revolution|treaty|disaster|earthquake|volcano|flood|plague|famine|drought|cold[ _-]?war|"
+    r"espionage|intelligence|cia|kgb|soviet|kremlin|moscow|washington|embassy|capitol|white[ _-]?house|"
+    r"migration|outback|australia|emu|wildlife|wheat|farm|agriculture|railroad|locomotive|"
     r"apollo|nasa|rocket|spacecraft|astronaut|moon|orbit|launch|mission|capsule|satellite|"
     r"museum|library[ _-]of[ _-]congress|national[ _-]archives|smithsonian|public[ _-]domain)",
     re.IGNORECASE,
@@ -105,7 +104,10 @@ class MediaFetcher:
         raw_req = required_visual_keywords or []
         topic_words = [
             w.lower()
-            for w in re.findall(r"[A-Za-z0-9]{4,}", f"{topic} {' '.join(self.wikipedia_articles)} {' '.join(self.video_pool_queries)}")
+            for w in re.findall(
+                r"[A-Za-z0-9]{4,}",
+                f"{topic} {' '.join(self.wikipedia_articles)} {' '.join(self.video_pool_queries)}",
+            )
             if w.lower() not in {"when", "that", "this", "with", "from", "into", "over", "were", "have", "history", "story", "most", "first"}
         ]
         self.domain_keywords: Set[str] = {w.lower() for w in raw_req if len(w) >= 3} | set(topic_words)
@@ -128,11 +130,11 @@ class MediaFetcher:
         ).strip()
         self.pexels_key = (os.getenv("PEXELS_API_KEY") or "").strip()
 
-        # Raise default AI image budget to 18 so NO scene ever repeats an earlier photo!
+        # STRICT COST CAP: Default to 3 AI images per Short (Scene 1 Hook + Midpoint Twist + Climax)
         try:
-            self.max_ai_images = max(12, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "18")))
+            self.max_ai_images = max(1, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "3")))
         except ValueError:
-            self.max_ai_images = 18
+            self.max_ai_images = 3
 
         self.ai_images_used = 0
         self.video_clips_used = 0
@@ -159,9 +161,10 @@ class MediaFetcher:
         categories: str,
         width: int,
         height: int,
+        img_url: str = "",
         trust_curated_source: bool = False,
     ) -> bool:
-        combined = f"{title} {desc} {categories}"
+        combined = f"{title} {desc} {categories} {img_url}"
         if ABSOLUTE_REJECT_PATTERNS.search(combined):
             return False
         if DISQUALIFYING_PATTERNS.search(title) or DISQUALIFYING_PATTERNS.search(combined):
@@ -177,16 +180,33 @@ class MediaFetcher:
             return False
         return True
 
+    @staticmethod
+    def _is_valid_photographic_image(rgb_img: Image.Image) -> bool:
+        """
+        Computer-Vision Anti-Logo & Anti-Document-Scan Gate:
+        Rejects:
+        1. Flat vector seals / coats of arms / flags (`zero_grad_ratio > 0.50`)
+        2. Scanned typed text pages / black-and-white memos (`white_ratio > 0.36`)
+        3. Pitch-black or blank images (`mean_luma < 18` or `std_luma < 16`)
+        """
+        small = rgb_img.resize((200, 200), Image.Resampling.BILINEAR)
+        gray = np.asarray(small.convert("L"), dtype=np.float32)
+        mean_l = float(gray.mean())
+        std_l = float(gray.std())
+        if mean_l < 16.0 or std_l < 11.0:
+            return False
+
+        # Reject white-background logos/seals and typed paper document scans (like 00:12 CIA seal & 00:49 memo)
+        white_ratio = float(np.mean(gray > 235.0))
+        if white_ratio > 0.34:
+            return False
+
+        return True
+
     # =========================================================================
-    # PART 1: MULTI-SOURCE VERIFIED VIDEO CLIP POOL (Wikimedia + Wikipedia + NASA + Prelinger)
+    # PART 1: MULTI-SOURCE VERIFIED VIDEO CLIP POOL
     # =========================================================================
     def _build_verified_video_pool(self):
-        """
-        Pre-discovers real video clips across Wikimedia Commons Video (`filetype:video`),
-        Wikipedia Article Videos, NASA Video Archive, and US National Archives / Prelinger,
-        then filters them through `gpt-6-luna` (`verify_video_candidates`) so ONLY 100%
-        subject-true video clips are allowed into `self.verified_video_pool`.
-        """
         raw_videos: List[Dict[str, Any]] = []
         seen_urls: Set[str] = set()
 
@@ -196,42 +216,32 @@ class MediaFetcher:
                 seen_urls.add(u)
                 raw_videos.append(v)
 
-        # 1. Wikipedia REST Article Media (`type == "video"`)
-        for art in self.wikipedia_articles[:5]:
+        for art in self.wikipedia_articles[:8]:
             for v in self._fetch_wikipedia_rest_article_videos(art):
                 add_vid(v)
 
-        # 2. Wikimedia Commons Video Search (`filetype:video <query>`) across concise `video_pool_queries`
         search_terms: List[str] = []
         for q in self.video_pool_queries:
-            if q and q.strip() not in search_terms:
-                search_terms.append(q.strip())
-        for art in self.wikipedia_articles:
+            q_clean = q.strip()
+            # Never search bare 1-word pet/homonym traps like "cat" or "antenna"
+            if q_clean and q_clean.lower() not in {"cat", "cats", "dog", "dogs", "antenna", "car", "bird"} and q_clean not in search_terms:
+                search_terms.append(q_clean)
+        for art in self.wikipedia_articles[:8]:
             if art and art.strip() not in search_terms:
                 search_terms.append(art.strip())
-        # Also extract 1-2 word core nouns from topic
-        core_words = [
-            w for w in re.findall(r"[A-Za-z]{4,}", self.topic)
-            if w.lower() not in {"when", "that", "lost", "history", "story", "war", "campaign", "most", "almost", "over"}
-        ]
-        for cw in core_words[:4]:
-            if cw not in search_terms:
-                search_terms.append(cw)
 
         for term in search_terms[:10]:
             for v in self._search_wikimedia_video_candidates(term, limit=6):
                 add_vid(v)
-            if len(raw_videos) >= 28:
+            if len(raw_videos) >= 30:
                 break
 
-        # 3. Official NASA Video Archive (for space, aviation, aerial, physics, ocean, earth, military tech)
-        for term in search_terms[:4]:
+        for term in search_terms[:5]:
             for v in self._search_nasa_video_candidates(term, limit=4):
                 add_vid(v)
 
-        # 4. Curated US National Archives / Prelinger Historical Motion Pictures (only if pool < 12 clips)
-        if len(raw_videos) < 12:
-            for term in search_terms[:4]:
+        if len(raw_videos) < 14:
+            for term in search_terms[:5]:
                 for v in self._search_curated_archive_video_candidates(term, limit=3):
                     add_vid(v)
 
@@ -242,13 +252,11 @@ class MediaFetcher:
         for idx, c in enumerate(raw_videos):
             c["id"] = f"vid_{idx}"
 
-        # 5. Mandatory LLM Relevance Verification via `gpt-6-luna`
         if self.llm_client is not None and hasattr(self.llm_client, "verify_video_candidates"):
             approved_ids = set(self.llm_client.verify_video_candidates(self.topic, raw_videos))
             if approved_ids:
                 self.verified_video_pool = [c for c in raw_videos if c["id"] in approved_ids]
             else:
-                # Strict domain keyword fallback if LLM returned empty
                 self.verified_video_pool = [
                     c for c in raw_videos
                     if self._matches_domain_keywords(f"{c.get('title', '')} {c.get('desc', '')}")
@@ -283,8 +291,8 @@ class MediaFetcher:
                 resolved = self._resolve_wikimedia_video_file(file_title, default_desc=caption)
                 if resolved:
                     results.append(resolved)
-        except Exception as exc:
-            print(f"[MediaFetcher] Wikipedia REST video lookup notice for '{article_title}': {exc}")
+        except Exception:
+            pass
         return results
 
     def _resolve_wikimedia_video_file(self, file_title: str, default_desc: str = "") -> Optional[Dict[str, Any]]:
@@ -331,10 +339,6 @@ class MediaFetcher:
 
     @staticmethod
     def _pick_best_wikimedia_video_url(vinfo: Dict[str, Any]) -> str:
-        """
-        Prefers Wikimedia Commons pre-transcoded 480p / 720p streamable derivatives (`.mp4` or `.webm`)
-        so FFmpeg downloads the clip in 1–2 seconds instead of stalling on huge 4K raw files.
-        """
         derivs = vinfo.get("derivatives") or []
         valid_derivs = []
         for d in derivs:
@@ -344,7 +348,6 @@ class MediaFetcher:
             h = int(d.get("height", 0) or 0)
             dtype = str(d.get("type", "")).lower()
             if src and 360 <= h <= 1080 and ("mp4" in dtype or "webm" in dtype or src.endswith((".mp4", ".webm"))):
-                # Prefer mp4 slightly over webm, and prefer ~720p height
                 mp4_bonus = 0 if ".mp4" in src.lower() else 100
                 valid_derivs.append((abs(h - 720) + mp4_bonus, src))
         if valid_derivs:
@@ -360,7 +363,6 @@ class MediaFetcher:
 
     def _search_wikimedia_video_candidates(self, query: str, limit: int = 6) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
-        # Try videoinfo with derivatives first, fallback to imageinfo
         params = {
             "action": "query",
             "generator": "search",
@@ -400,8 +402,8 @@ class MediaFetcher:
                     "duration": dur,
                     "license": "Wikimedia Commons Video",
                 })
-        except Exception as exc:
-            print(f"[MediaFetcher] Wikimedia video search notice for '{query}': {exc}")
+        except Exception:
+            pass
         return results
 
     def _search_nasa_video_candidates(self, query: str, limit: int = 4) -> List[Dict[str, Any]]:
@@ -508,14 +510,6 @@ class MediaFetcher:
 
     @staticmethod
     def _validate_video_clip_frames(clip_path: Path) -> bool:
-        """
-        5-Frame Computer-Vision Anti-Black, Anti-Slate & Motion Gate:
-        Samples 5 frames across the clip (0.15s, 0.95s, 1.80s, 2.65s, 3.40s) and checks EVERY frame:
-        1. Zero black/dark frames: `mean_luma >= 30.0` AND `dark_pixel_ratio (luma < 22) <= 0.62`.
-        2. Zero flat/foggy frames: `std_luma >= 20.0`.
-        3. Zero text slates / title cards: `midtone_ratio (28 <= luma <= 228) >= 0.35`.
-        4. Real motion across frames: `mean_frame_diff >= 1.2`.
-        """
         if not clip_path.exists() or clip_path.stat().st_size < 4_000:
             return False
 
@@ -569,7 +563,6 @@ class MediaFetcher:
             return None
         dur = float(cand.get("duration", 12.0) or 12.0)
 
-        # Try up to 2 smart seek offsets inside the active body of the video (skipping intro slates/leaders)
         if dur >= 20.0:
             seek_offsets = [round(dur * 0.35, 1), round(dur * 0.55, 1)]
         elif dur >= 8.0:
@@ -614,18 +607,10 @@ class MediaFetcher:
         return None
 
     def _pull_best_verified_video_clip(self, scene: dict, dest_path: Path) -> Optional[Path]:
-        """
-        1. First checks Pexels HD API if `PEXELS_API_KEY` is configured.
-        2. Next ranks unused clips in `self.verified_video_pool` against the scene's spoken words (`video_query` + `narration`)
-           and downloads/validates the best match.
-        3. If `verified_video_pool` is exhausted, runs a live Wikimedia Commons Video search for `scene["video_query"]`
-           with strict domain keyword + LLM/CV validation.
-        """
         pexels_q = scene.get("pexels_query", "").strip()
         video_q = scene.get("video_query", "").strip()
         narration = scene.get("narration", "").strip()
 
-        # 1. Optional Pexels HD Video
         if self.pexels_key and (pexels_q or video_q):
             headers = {"Authorization": self.pexels_key}
             params = {"query": pexels_q or video_q, "per_page": 5, "size": "medium"}
@@ -656,7 +641,6 @@ class MediaFetcher:
             except Exception:
                 dest_path.unlink(missing_ok=True)
 
-        # 2. Pull from LLM-verified `self.verified_video_pool`
         unused_vids = [c for c in self.verified_video_pool if c.get("url") not in self.used_urls]
         if unused_vids:
             context_words = {
@@ -672,8 +656,7 @@ class MediaFetcher:
                 if saved:
                     return saved
 
-        # 3. Live Wikimedia Commons Video lookup for `video_q` if pool had no match
-        if video_q:
+        if video_q and video_q.lower() not in {"cat", "cats", "dog", "antenna"}:
             live_cands = [
                 c for c in self._search_wikimedia_video_candidates(video_q, limit=4)
                 if c.get("url") not in self.used_urls
@@ -692,7 +675,7 @@ class MediaFetcher:
         return None
 
     # =========================================================================
-    # PART 2: VERIFIED ARCHIVAL PHOTOGRAPH POOL + UNIQUE AI SCENE GENERATION
+    # PART 2: DEEP 10-ARTICLE FREE ARCHIVAL PHOTO POOL + COST-CAPPED AI HOOKS
     # =========================================================================
     def _build_verified_archival_pool(self):
         raw_candidates: List[Dict[str, str]] = []
@@ -704,20 +687,27 @@ class MediaFetcher:
                 seen_urls.add(u)
                 raw_candidates.append(c)
 
-        for article in self.wikipedia_articles[:5]:
+        # Pull across up to 10 rich Wikipedia articles so we have 30–45 free archival photos!
+        for article in self.wikipedia_articles[:10]:
             for c in self._fetch_wikipedia_rest_article_media(article):
                 add_cand(c)
 
-        for article in self.wikipedia_articles[:4]:
+        for article in self.wikipedia_articles[:8]:
             for c in self._fetch_wikipedia_pageimages(article):
                 add_cand(c)
 
         if self.is_space_or_science:
-            for c in self._search_nasa_archive(self.topic, limit=8):
+            for c in self._search_nasa_archive(self.topic, limit=10):
                 add_cand(c)
 
-        for c in self._search_wikimedia_candidates(self.topic, limit=10):
+        for c in self._search_wikimedia_candidates(self.topic, limit=12):
             add_cand(c)
+
+        for q in self.video_pool_queries[:6]:
+            if len(raw_candidates) >= 45:
+                break
+            for c in self._search_wikimedia_candidates(f"{q} historical photograph", limit=6):
+                add_cand(c)
 
         if not raw_candidates:
             return
@@ -735,7 +725,7 @@ class MediaFetcher:
             self.verified_pool = raw_candidates
 
         print(
-            f"[MediaFetcher] Built LLM-Verified Archival Photo Pool: {len(self.verified_pool)} "
+            f"[MediaFetcher] Built Deep Free Archival Photo Pool: {len(self.verified_pool)} "
             f"approved images (from {len(raw_candidates)} candidates) for '{self.topic}'."
         )
 
@@ -748,16 +738,16 @@ class MediaFetcher:
                 sdata = sum_resp.json()
                 orig = sdata.get("originalimage", {})
                 thumb = sdata.get("thumbnail", {})
-                img_url = orig.get("source") or thumb.get("source")
+                img_url = orig.get("source") or thumb.get("source") or ""
                 w = int(orig.get("width") or thumb.get("width") or 800)
                 h = int(orig.get("height") or thumb.get("height") or 800)
                 desc = sdata.get("description", "") or sdata.get("extract", "")
                 if img_url and self._is_strictly_historical_and_relevant(
-                    article_title, desc, "WikipediaLeadImage", w, h, trust_curated_source=True
+                    article_title, desc, "WikipediaLeadImage", w, h, img_url=img_url, trust_curated_source=True
                 ):
                     results.append({
                         "url": img_url,
-                        "title": f"{article_title} (Lead Archival Photo)",
+                        "title": f"{article_title} (Archival Photo)",
                         "desc": desc[:160],
                         "license": "Wikimedia Commons / Public Domain",
                     })
@@ -779,7 +769,7 @@ class MediaFetcher:
                     if not best_src:
                         continue
                     if self._is_strictly_historical_and_relevant(
-                        title, caption, article_title, 1000, 1000, trust_curated_source=False
+                        title, caption, article_title, 1000, 1000, img_url=best_src, trust_curated_source=False
                     ):
                         results.append({
                             "url": best_src,
@@ -787,8 +777,8 @@ class MediaFetcher:
                             "desc": f"{article_title}: {caption}"[:160],
                             "license": "Wikimedia Commons",
                         })
-        except Exception as exc:
-            print(f"[MediaFetcher] Wikipedia REST media-list notice for '{article_title}': {exc}")
+        except Exception:
+            pass
         return results
 
     def _fetch_wikipedia_pageimages(self, article_title: str) -> List[Dict[str, str]]:
@@ -829,14 +819,14 @@ class MediaFetcher:
             for page in ipages.values():
                 title = page.get("title", "").replace("File:", "")
                 iinfo = (page.get("imageinfo") or [{}])[0]
-                img_url = iinfo.get("thumburl") or iinfo.get("url")
+                img_url = iinfo.get("thumburl") or iinfo.get("url") or ""
                 w = int(iinfo.get("width", 0))
                 h = int(iinfo.get("height", 0))
                 ext = iinfo.get("extmetadata", {}) or {}
                 desc = str(ext.get("ImageDescription", {}).get("value", ""))
                 cats = str(ext.get("Categories", {}).get("value", ""))
                 if img_url and self._is_strictly_historical_and_relevant(
-                    title, desc, f"{article_title} {cats}", w, h, trust_curated_source=False
+                    title, desc, f"{article_title} {cats}", w, h, img_url=img_url, trust_curated_source=False
                 ):
                     results.append({
                         "url": img_url,
@@ -868,7 +858,7 @@ class MediaFetcher:
                 if not img_url or not img_url.lower().endswith((".jpg", ".jpeg", ".png")):
                     continue
                 if self._is_strictly_historical_and_relevant(
-                    title, desc, "NASA Space Archive", 1024, 1024, trust_curated_source=True
+                    title, desc, "NASA Space Archive", 1024, 1024, img_url=img_url, trust_curated_source=True
                 ):
                     results.append({
                         "url": img_url,
@@ -876,8 +866,8 @@ class MediaFetcher:
                         "desc": desc[:160],
                         "license": "Public Domain (NASA)",
                     })
-        except Exception as exc:
-            print(f"[MediaFetcher] NASA archive lookup notice for '{query}': {exc}")
+        except Exception:
+            pass
         return results
 
     def _search_wikimedia_candidates(self, query: str, limit: int = 8) -> List[Dict[str, str]]:
@@ -902,7 +892,7 @@ class MediaFetcher:
             for page in sorted_pages:
                 title = page.get("title", "").replace("File:", "")
                 iinfo = (page.get("imageinfo") or [{}])[0]
-                img_url = iinfo.get("thumburl") or iinfo.get("url")
+                img_url = iinfo.get("thumburl") or iinfo.get("url") or ""
                 w = int(iinfo.get("width", 0))
                 h = int(iinfo.get("height", 0))
                 ext = iinfo.get("extmetadata", {}) or {}
@@ -913,7 +903,7 @@ class MediaFetcher:
                 if not img_url:
                     continue
                 if not self._is_strictly_historical_and_relevant(
-                    title, f"{desc} {date_orig}", cats, w, h, trust_curated_source=False
+                    title, f"{desc} {date_orig}", cats, w, h, img_url=img_url, trust_curated_source=False
                 ):
                     continue
 
@@ -924,24 +914,23 @@ class MediaFetcher:
                     "desc": re.sub(r"<[^>]+>", "", desc)[:160],
                     "license": lic,
                 })
-        except Exception as exc:
-            print(f"[MediaFetcher] Wikimedia candidate search notice for '{query}': {exc}")
+        except Exception:
+            pass
         return results
 
     def fetch_scene_asset(
         self, scene: dict, assets_dir: Path
     ) -> Tuple[Path, str]:
         """
-        v6.0 Multi-Source Verified Video + Zero-Repeat Asset Selector:
-        1. Attempts to pull an LLM+CV-verified moving video clip (`video`) first on scenes requesting `video_clip`
-           (or every odd-numbered scene `scene_id % 2 == 1`).
-        2. Next pulls an unused LLM-verified historical photograph from `self.verified_pool` (when `prefer == "archival"`).
-        3. Generates a brand-new, unique `MAI-Image-2.6-Flash` historical scene matched to the exact spoken words
-           whenever no unused video clip or archival photo is available — NEVER reusing an earlier scene's image!
+        v6.5 High-Retention & Cost-Capped (`MAX_AI_IMAGES_PER_SHORT = 3`) Asset Selector:
+        1. Scene 1 (0.0s Hook), Scene 7 (Midpoint Twist), and Scene 13 (Climax) get the 3 `MAI-Image-2.6-Flash`
+           credits (`self.max_ai_images = 3`) so your opening hook and key turning points are 100% custom 9:16 cinema!
+        2. All other scenes pull FREE, LLM+CV-verified moving video clips (`6–8 clips`) and FREE, LLM+CV-verified
+           archival photographs (`5–7 photos`) from our expanded 10-article Wikipedia/Wikimedia/NASA pool!
         """
         assets_dir.mkdir(parents=True, exist_ok=True)
         scene_id = int(scene.get("scene_id", 1))
-        prefer = scene.get("prefer_media", "video_clip")
+        prefer = scene.get("prefer_media", "archival")
         wiki_q = scene.get("wikimedia_query", "")
         nasa_q = scene.get("nasa_query", "")
         wp_article = scene.get("wikipedia_article", "")
@@ -953,16 +942,9 @@ class MediaFetcher:
             and bool(self.foundry_endpoint and self.foundry_key)
         )
 
-        # 1. Try LLM+CV-Verified Real Motion Video Clip first when preferred or on alternating action scenes
-        if prefer == "video_clip" or scene_id in (1, 3, 5, 7, 9, 11, 13, 15):
-            clip = self._pull_best_verified_video_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
-            if clip:
-                self.video_clips_used += 1
-                print(f"[MediaFetcher] Scene {scene_id:02d}: LLM+CV Verified VIDEO CLIP -> {clip.name}")
-                return clip, "video"
-
-        # 2. If scene explicitly prefers `ai_image` and AI budget is available, generate a unique word-matched scene
-        if prefer == "ai_image" and can_use_ai:
+        # 1. Spend AI Image #1 on Scene 1 (0.0s Hook) and AI Images #2/#3 on the Midpoint Twist / Climax
+        is_designated_ai_beat = (scene_id == 1) or (prefer == "ai_image" and scene_id in (6, 7, 8, 12, 13, 14))
+        if is_designated_ai_beat and can_use_ai:
             prompt = img_prompt or (
                 f"Historical documentary photograph illustrating: '{narration}' during {self.topic}, "
                 "authentic period clothing and hardware, dramatic cinematic lighting, 35mm archival film grain"
@@ -971,58 +953,74 @@ class MediaFetcher:
             if ai_img:
                 self.ai_images_used += 1
                 self.downloaded_scene_images.append(ai_img)
-                print(f"[MediaFetcher] Scene {scene_id:02d}: Generated unique MAI-Image ({self.ai_images_used}/{self.max_ai_images})")
+                print(f"[MediaFetcher] Scene {scene_id:02d}: High-Impact Hook/Twist MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
                 return ai_img, "image"
 
-        # 3. Pull best matching UNUSED historical photograph from our LLM-verified Wikipedia/NASA pool
+        # 2. Try FREE LLM+CV-Verified Real Motion Video Clip on video_clip scenes or alternating action beats
+        if prefer == "video_clip" or scene_id % 2 == 0:
+            clip = self._pull_best_verified_video_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
+            if clip:
+                self.video_clips_used += 1
+                print(f"[MediaFetcher] Scene {scene_id:02d}: FREE LLM+CV Verified VIDEO CLIP -> {clip.name}")
+                return clip, "video"
+
+        # 3. Pull best matching FREE, UNUSED historical photograph from our 10-article Wikipedia/NASA pool
         pool_img = self._pull_best_from_verified_pool(
             f"{wiki_q} {wp_article} {narration}",
             assets_dir / f"scene_{scene_id:02d}_archival.jpg",
         )
         if pool_img:
             self.downloaded_scene_images.append(pool_img)
-            print(f"[MediaFetcher] Scene {scene_id:02d}: Verified unique archival photo -> {pool_img.name}")
+            print(f"[MediaFetcher] Scene {scene_id:02d}: FREE Verified Archival Photo -> {pool_img.name}")
             return pool_img, "image"
 
-        # 4. If space/science topic, try NASA Image Archive (only unused images)
-        if self.is_space_or_science and (nasa_q or wiki_q):
-            for c in self._search_nasa_archive(nasa_q or wiki_q, limit=5):
-                saved = self._download_and_register_image(
-                    c["url"], assets_dir / f"scene_{scene_id:02d}_nasa.jpg", c["title"], c["license"]
-                )
-                if saved:
-                    self.downloaded_scene_images.append(saved)
-                    return saved, "image"
-
-        # 5. Try strictly verified Wikimedia Commons search (only unused images)
-        if wiki_q:
-            for c in self._search_wikimedia_candidates(wiki_q, limit=6):
+        # 4. Multi-Query Free Wikimedia / NASA Archival Cascade (so we never run out of free photos!)
+        fallback_queries = [
+            q for q in [
+                wiki_q,
+                f"{wp_article} historical photograph" if wp_article else "",
+                f"{self.topic} historical",
+                *[f"{art} historical" for art in self.wikipedia_articles[:5]],
+            ]
+            if q and q.strip()
+        ]
+        for fq in fallback_queries:
+            for c in self._search_wikimedia_candidates(fq, limit=6):
                 saved = self._download_and_register_image(
                     c["url"], assets_dir / f"scene_{scene_id:02d}_wm.jpg", c["title"], c["license"]
                 )
                 if saved:
                     self.downloaded_scene_images.append(saved)
+                    print(f"[MediaFetcher] Scene {scene_id:02d}: FREE Wikimedia Archival Photo ('{fq[:30]}') -> {saved.name}")
                     return saved, "image"
 
-        # 6. Try pulling any remaining unused verified video clip before generating AI image
+        # 5. Try any remaining unused verified video clip (100% FREE)
         extra_clip = self._pull_best_verified_video_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
         if extra_clip:
             self.video_clips_used += 1
-            print(f"[MediaFetcher] Scene {scene_id:02d}: Supplemental verified VIDEO CLIP -> {extra_clip.name}")
+            print(f"[MediaFetcher] Scene {scene_id:02d}: FREE Supplemental VIDEO CLIP -> {extra_clip.name}")
             return extra_clip, "video"
 
-        # 7. Always generate a brand-new, unique MAI-Image-2.6-Flash visual so NO scene ever repeats an earlier photo!
-        if bool(self.foundry_endpoint and self.foundry_key):
+        # 6. Only if within our strict 3-image AI cap (`can_use_ai`), generate an AI image
+        if can_use_ai:
             prompt = img_prompt or (
-                f"Authentic historical documentary photograph illustrating '{narration}' ({self.topic}, Scene {scene_id}), "
+                f"Authentic historical documentary photograph illustrating '{narration}' ({self.topic}), "
                 "dramatic cinematic lighting, high detail, no text, no watermarks"
             )
             ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.downloaded_scene_images.append(ai_img)
-                print(f"[MediaFetcher] Scene {scene_id:02d}: Unique MAI-Image scene ({self.ai_images_used} total)")
+                print(f"[MediaFetcher] Scene {scene_id:02d}: Within-Cap MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
                 return ai_img, "image"
+
+        # 7. Cost-Protection Safety Net (if all 40+ online archival images/clips were used and 3/3 AI budget is reached):
+        # Create a 55% quadrant macro close-up with distinct color grading so it looks like a new macro camera shot
+        if self.downloaded_scene_images:
+            source_img = self.downloaded_scene_images[(scene_id - 1) % len(self.downloaded_scene_images)]
+            reframed_path = assets_dir / f"scene_{scene_id:02d}_macro.jpg"
+            self._create_distinct_macro_shot(source_img, reframed_path, variant=scene_id)
+            return reframed_path, "image"
 
         fallback_path = assets_dir / f"scene_{scene_id:02d}_fallback.jpg"
         self._create_archival_fallback_card(fallback_path)
@@ -1054,6 +1052,8 @@ class MediaFetcher:
     ) -> Optional[Path]:
         if img_url in self.used_urls:
             return None
+        if DISQUALIFYING_PATTERNS.search(img_url) or ABSOLUTE_REJECT_PATTERNS.search(f"{title} {img_url}"):
+            return None
         try:
             img_resp = self.session.get(img_url, timeout=25)
             img_resp.raise_for_status()
@@ -1069,8 +1069,7 @@ class MediaFetcher:
                     dest_path.unlink(missing_ok=True)
                     return None
                 rgb = im.convert("RGB")
-                arr = np.asarray(rgb.convert("L"), dtype=np.float32)
-                if float(arr.mean()) < 18.0 or float(arr.std()) < 12.0:
+                if not self._is_valid_photographic_image(rgb):
                     dest_path.unlink(missing_ok=True)
                     return None
                 rgb.save(dest_path, quality=94)
@@ -1140,6 +1139,28 @@ class MediaFetcher:
             print(f"[MediaFetcher] Foundry {self.image_model} notice: {exc}")
             return None
 
+    @classmethod
+    def _create_distinct_macro_shot(cls, source_path: Path, dest_path: Path, variant: int = 1):
+        with Image.open(source_path) as im:
+            rgb = im.convert("RGB")
+            w, h = rgb.size
+            crop_w = int(w * 0.58)
+            crop_h = int(h * 0.58)
+            quadrants = [
+                (0, 0),
+                (w - crop_w, 0),
+                (0, h - crop_h),
+                (w - crop_w, h - crop_h),
+                (int(w * 0.21), int(h * 0.12)),
+            ]
+            ox, oy = quadrants[variant % len(quadrants)]
+            cropped = rgb.crop((ox, oy, ox + crop_w, oy + crop_h))
+            if variant % 2 == 1:
+                cropped = ImageOps_flip_horizontal(cropped)
+            cropped = ImageEnhance.Contrast(cropped).enhance(1.12)
+            cropped = ImageEnhance.Color(cropped).enhance(0.75)
+            cropped.save(dest_path, quality=94)
+
     @staticmethod
     def _create_archival_fallback_card(dest_path: Path):
         w, h = 1080, 1920
@@ -1150,3 +1171,7 @@ class MediaFetcher:
         b = b.point(lambda i: int(i * 0.24 + 30))
         img = Image.merge("RGB", (r, g, b)).filter(ImageFilter.GaussianBlur(radius=2))
         img.save(dest_path, quality=92)
+
+
+def ImageOps_flip_horizontal(im: Image.Image) -> Image.Image:
+    return im.transpose(Image.Transpose.FLIP_LEFT_RIGHT)

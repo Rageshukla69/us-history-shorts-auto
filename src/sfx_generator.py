@@ -1,12 +1,13 @@
 """
-Synthesizes:
-1. Emotional, uplifting "Interstellar / Viral Documentary" soundtrack (`interstellar_bgm.wav` & `mystery_bgm.wav`)
-   inspired by Hans Zimmer's "Cornfield Chase" / "Time".
-2. Netflix-Style 0.0s Hook Impact + Sub-Bass Pulse Track (`hook_impact.wav`):
-   Gives the opening 1.2 seconds of the Short a deep cinematic sub-bass thud + subtle metallic shimmer riser
-   so viewers physically stop scrolling on Frame 1, plus subtle low-end tension pulses at 12s, 24s, and 36s!
+Synthesizes (v6.5 — Viral Documentary Sound Design & Timestamp-Synced Scene Transition Whooshes):
+1. Emotional, uplifting "Interstellar / Viral Documentary" soundtrack (`interstellar_bgm.wav` & `mystery_bgm.wav`).
+2. Netflix-Style 0.0s Hook Impact + Timestamp-Synced Scene Transition Whoosh & Analog Click Track (`generate_scene_transition_sfx_track`):
+   - Fires a deep sub-bass impact drop + metallic shimmer on Frame 1 (`0.0s`) to stop scrolling.
+   - Places a subtle, warm cinematic air-whoosh + archival film projector click at the EXACT `start_sec` of every
+     visual cut (`scenes[1:]`), plus low-end tension risers at the Midpoint Twist (`Scene 7`) and Climax (`Scene 13`)!
 """
 from pathlib import Path
+from typing import List
 import wave
 import numpy as np
 
@@ -20,13 +21,13 @@ def save_wav(filename: Path, samples: np.ndarray, sample_rate: int = 44100):
     if samples.ndim == 1:
         max_val = float(np.max(np.abs(samples)))
         if max_val > 0:
-            samples = samples / max_val * 0.90
+            samples = samples / max_val * 0.92
         int_samples = (samples * 32767).astype(np.int16)
         stereo = np.column_stack((int_samples, int_samples)).flatten()
     else:
         max_val = float(np.max(np.abs(samples)))
         if max_val > 0:
-            samples = samples / max_val * 0.90
+            samples = samples / max_val * 0.92
         int_samples = (samples * 32767).astype(np.int16)
         stereo = int_samples.flatten()
 
@@ -38,29 +39,22 @@ def save_wav(filename: Path, samples: np.ndarray, sample_rate: int = 44100):
 
 
 def generate_hook_impact_track(duration_sec: float = 60.0, sr: int = 44100) -> np.ndarray:
-    """
-    Synthesizes a 60-second stereo accent track containing:
-    - A deep, theater-grade 0.0s sub-bass impact drop (90Hz -> 36Hz pitch sweep) + subtle high shimmer
-      in the first 1.1 seconds to stop viewers from swiping away.
-    - Subtle low-frequency documentary tension pulses at t=12s, t=24s, t=36s, and t=46s.
-    """
     n_samples = int(sr * duration_sec)
     left = np.zeros(n_samples, dtype=np.float64)
     right = np.zeros(n_samples, dtype=np.float64)
 
-    # 1. Opening 0.0s - 1.2s Hook Sub-Bass Impact Drop
-    hit_len = int(1.2 * sr)
-    t_hit = np.linspace(0, 1.2, hit_len, endpoint=False)
-    freq_sweep = 36.0 + 62.0 * np.exp(-9.5 * t_hit)
+    # 1. Opening 0.0s - 1.25s Hook Sub-Bass Impact Drop
+    hit_len = int(1.25 * sr)
+    t_hit = np.linspace(0, 1.25, hit_len, endpoint=False)
+    freq_sweep = 38.0 + 68.0 * np.exp(-9.0 * t_hit)
     phase = 2 * np.pi * np.cumsum(freq_sweep) / sr
-    sub_drop = np.sin(phase) * np.exp(-3.2 * t_hit) * np.minimum(1.0, t_hit / 0.012)
-    shimmer_l = 0.14 * np.sin(2 * np.pi * 440.0 * t_hit) * np.exp(-5.5 * t_hit)
-    shimmer_r = 0.14 * np.sin(2 * np.pi * 659.25 * t_hit) * np.exp(-5.5 * t_hit)
+    sub_drop = np.sin(phase) * np.exp(-3.0 * t_hit) * np.minimum(1.0, t_hit / 0.010)
+    shimmer_l = 0.16 * np.sin(2 * np.pi * 440.0 * t_hit) * np.exp(-5.0 * t_hit)
+    shimmer_r = 0.16 * np.sin(2 * np.pi * 659.25 * t_hit) * np.exp(-5.0 * t_hit)
 
-    left[:hit_len] += 0.75 * sub_drop + shimmer_l
-    right[:hit_len] += 0.75 * sub_drop + shimmer_r
+    left[:hit_len] += 0.82 * sub_drop + shimmer_l
+    right[:hit_len] += 0.82 * sub_drop + shimmer_r
 
-    # 2. Subtle documentary bass pulses at twist points (12s, 24s, 36s, 46s)
     for beat_sec in (12.0, 24.0, 36.0, 46.0):
         if beat_sec + 0.9 >= duration_sec:
             continue
@@ -69,11 +63,97 @@ def generate_hook_impact_track(duration_sec: float = 60.0, sr: int = 44100) -> n
         tp = np.linspace(0, 0.85, p_len, endpoint=False)
         pf = 38.0 + 35.0 * np.exp(-10.0 * tp)
         p_phase = 2 * np.pi * np.cumsum(pf) / sr
-        pulse = 0.42 * np.sin(p_phase) * np.exp(-4.0 * tp) * np.minimum(1.0, tp / 0.015)
+        pulse = 0.45 * np.sin(p_phase) * np.exp(-4.0 * tp) * np.minimum(1.0, tp / 0.015)
         left[i0 : i0 + p_len] += pulse
         right[i0 : i0 + p_len] += pulse
 
     return np.column_stack((left, right))
+
+
+def generate_scene_transition_sfx_track(
+    scenes: List[dict], total_duration_sec: float, out_wav: Path, sr: int = 44100
+) -> Path:
+    """
+    Builds a custom stereo Sound Design track synced to the EXACT timestamps of every scene cut (`scene["start_sec"]`):
+    - At t = 0.0s (Scene 1 Hook): Deep Theater Sub-Bass Boom + Rising Shimmer.
+    - At every scene transition (`scenes[1:]`): Warm, low-passed cinematic air-whoosh + subtle archival tape click
+      (panned slightly L/R and varied across 3 pitch profiles so transitions feel tactile like Johnny Harris / History Bypass).
+    - At Scene 7 (Midpoint Twist) and Scene 13 (Climax): Adds a 0.7s low-end tension riser leading into the cut!
+    """
+    dur = max(15.0, float(total_duration_sec) + 1.5)
+    n_samples = int(sr * dur)
+    left = np.zeros(n_samples, dtype=np.float64)
+    right = np.zeros(n_samples, dtype=np.float64)
+    rng = np.random.default_rng(1967)
+
+    # 1. 0.0s Hook Impact Drop
+    hit_len = min(n_samples, int(1.25 * sr))
+    t_hit = np.linspace(0, 1.25, hit_len, endpoint=False)
+    freq_sweep = 38.0 + 72.0 * np.exp(-8.5 * t_hit)
+    phase = 2 * np.pi * np.cumsum(freq_sweep) / sr
+    sub_drop = np.sin(phase) * np.exp(-2.8 * t_hit) * np.minimum(1.0, t_hit / 0.008)
+    left[:hit_len] += 0.85 * sub_drop
+    right[:hit_len] += 0.85 * sub_drop
+
+    # 2. Timestamp-Synced Transition Whooshes + Archival Clicks on every scene cut
+    for idx, scene in enumerate(scenes):
+        if idx == 0:
+            continue
+        cut_sec = float(scene.get("start_sec", 0.0))
+        if cut_sec <= 0.3 or cut_sec + 0.5 >= dur:
+            continue
+
+        # Subtle 0.26s air-whoosh centered right across the cut (starts 0.11s before cut, peaks at cut)
+        w_dur = 0.26
+        w_len = int(w_dur * sr)
+        w_start = max(0, int((cut_sec - 0.11) * sr))
+        w_end = min(n_samples, w_start + w_len)
+        actual_len = w_end - w_start
+        if actual_len <= 100:
+            continue
+
+        tw = np.linspace(0, w_dur, actual_len, endpoint=False)
+        env = np.sin(np.pi * tw / w_dur) ** 1.6
+
+        # Filtered pink-ish air sweep + warm low-mid body
+        white = rng.standard_normal(actual_len)
+        kernel_size = 28 + (idx % 3) * 10
+        kernel = np.ones(kernel_size) / kernel_size
+        filtered_air = np.convolve(white, kernel, mode="same")
+
+        sweep_f = (110.0 + (idx % 3) * 22.0) + 160.0 * np.sin(np.pi * tw / w_dur)
+        sweep_phase = 2 * np.pi * np.cumsum(sweep_f) / sr
+        tonal_whoosh = np.sin(sweep_phase) * 0.32
+
+        whoosh_sig = (filtered_air * 0.38 + tonal_whoosh) * env * 0.34
+
+        # Subtle analog projector/shutter transient right at the frame cut (0.015s)
+        click_offset = min(actual_len - 20, int(0.11 * sr))
+        if click_offset > 0:
+            c_len = min(int(0.014 * sr), actual_len - click_offset)
+            tc = np.linspace(0, 0.014, c_len, endpoint=False)
+            click_wave = np.sin(2 * np.pi * 1200.0 * np.exp(-180.0 * tc) * tc) * np.exp(-220.0 * tc) * 0.18
+            whoosh_sig[click_offset : click_offset + c_len] += click_wave
+
+        pan_l = 0.58 if idx % 2 == 0 else 0.42
+        pan_r = 1.0 - pan_l
+        left[w_start:w_end] += whoosh_sig * pan_l
+        right[w_start:w_end] += whoosh_sig * pan_r
+
+        # 3. Add a deep documentary tension pulse on key twist scenes (Scene 6/7, Scene 12/13)
+        if idx in (5, 6, 11, 12) and cut_sec + 0.85 < dur:
+            p_start = int(cut_sec * sr)
+            p_len = int(0.80 * sr)
+            tp = np.linspace(0, 0.80, p_len, endpoint=False)
+            pf = 40.0 + 42.0 * np.exp(-9.0 * tp)
+            p_phase = 2 * np.pi * np.cumsum(pf) / sr
+            pulse = 0.52 * np.sin(p_phase) * np.exp(-3.6 * tp) * np.minimum(1.0, tp / 0.012)
+            left[p_start : p_start + p_len] += pulse
+            right[p_start : p_start + p_len] += pulse
+
+    stereo = np.column_stack((left, right))
+    save_wav(out_wav, stereo, sample_rate=sr)
+    return out_wav
 
 
 def _piano_note(freq: float, dur_sec: float, sr: int = 44100) -> np.ndarray:
@@ -247,14 +327,7 @@ def generate_all_sfx():
 
     hook_impact = generate_hook_impact_track(duration_sec=60.0, sr=sr)
     save_wav(SFX_DIR / "hook_impact.wav", hook_impact, sr)
-
-    silent = np.zeros(int(sr * 0.10), dtype=np.float64)
-    for legacy_name in ("whoosh.wav", "pop.wav", "boom.wav", "shutter.wav"):
-        save_wav(SFX_DIR / legacy_name, silent, sr)
-
-    print(
-        "[AudioEngine] Generated Interstellar score + 0.0s Hook Impact sub-bass drop (assets/sfx/hook_impact.wav)."
-    )
+    print(f"[SFX] Generated v6.5 Documentary Score + Hook Impact -> {SFX_DIR}")
 
 
 if __name__ == "__main__":
