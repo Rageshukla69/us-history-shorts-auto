@@ -153,6 +153,7 @@ def run_pipeline():
                 "topic": topic,
                 "title": storyboard.get("title"),
                 "description": storyboard.get("description"),
+                "research_sources": storyboard.get("research_sources", []),
                 "ai_images_used": fetcher.ai_images_used,
                 "max_ai_images_cap": fetcher.max_ai_images,
                 "video_clips_used": fetcher.video_clips_used,
@@ -168,10 +169,24 @@ def run_pipeline():
     )
 
     # Step 6: Upload to YouTube via `YOUTUBE_TOKEN_JSON` (skipped automatically when DRY_RUN=true)
+    base_description = storyboard.get("description", topic)
+    research_sources = storyboard.get("research_sources", [])
+    source_lines = []
+    for source in research_sources[:8]:
+        if isinstance(source, dict):
+            source_title = str(source.get("title") or "Historical source").strip()
+            source_url = str(source.get("url") or "").strip()
+            if source_url.startswith(("https://", "http://")):
+                source_lines.append(f"- {source_title}: {source_url}")
+        elif isinstance(source, str) and source.startswith(("https://", "http://")):
+            source_lines.append(f"- {source}")
+    if source_lines:
+        base_description += "\\n\\nResearch references:\\n" + "\\n".join(source_lines)
+
     video_id = upload_short_to_youtube(
         video_path=final_mp4,
         title=storyboard.get("title", topic),
-        description=storyboard.get("description", topic),
+        description=base_description,
         tags=storyboard.get("tags", ["history", "shorts", "ushistory"]),
         attributions=fetcher.attributions,
     )

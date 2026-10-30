@@ -125,11 +125,11 @@ class MediaFetcher:
         ).strip()
         self.pexels_key = (os.getenv("PEXELS_API_KEY") or "").strip()
 
-        # STRICT COST CAP: Default = 4 AI images per Short (configurable via MAX_AI_IMAGES_PER_SHORT)
+        # STRICT COST CAP: Default = ZERO paid AI images. Set MAX_AI_IMAGES_PER_SHORT explicitly to opt in.
         try:
-            self.max_ai_images = max(1, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "4")))
+            self.max_ai_images = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "0")))
         except ValueError:
-            self.max_ai_images = 4
+            self.max_ai_images = 0
 
         self.ai_images_used = 0
         self.video_clips_used = 0
@@ -490,7 +490,7 @@ class MediaFetcher:
                     self.used_urls.add(url)
                     title = cand.get("title", "Archival Video")
                     lic = cand.get("license", "Public Domain / CC")
-                    self.attributions.append(f"• Video: {title[:65]} ({lic})")
+                    self.attributions.append(f"• Video: {title[:65]} ({lic}) — {url}")
                     return dest_path
                 dest_path.unlink(missing_ok=True)
             except Exception:
@@ -502,7 +502,7 @@ class MediaFetcher:
         video_q = scene.get("video_query", "").strip()
         narration = scene.get("narration", "").strip()
 
-        if self.pexels_key and (pexels_q or video_q):
+        if (self.pexels_key and os.getenv("ALLOW_PEXELS_UNVERIFIED", "false").lower() == "true" and (pexels_q or video_q)):
             headers = {"Authorization": self.pexels_key}
             params = {"query": pexels_q or video_q, "per_page": 5, "size": "medium"}
             try:
@@ -527,6 +527,7 @@ class MediaFetcher:
                         dest_path.write_bytes(vid_r.content)
                         if self._validate_video_clip_frames(dest_path):
                             self.used_urls.add(vid_id)
+                            self.attributions.append(f"• Video: Pexels #{v.get('id')} — {link}")
                             return dest_path, f"Pexels HD ({pexels_q or video_q})"
                         dest_path.unlink(missing_ok=True)
             except Exception:
@@ -538,11 +539,19 @@ class MediaFetcher:
                 w.lower() for w in re.findall(r"[A-Za-z0-9]{3,}", f"{video_q} {narration}")
             }
 
+            stop = {"the", "and", "for", "with", "from", "into", "over", "under", "old", "new", "real", "video", "footage", "vintage", "historical"}
+            context_words = {w for w in context_words if w not in stop and len(w) >= 4}
+
             def score_vid(c: Dict[str, Any]) -> int:
                 text = f"{c.get('title', '')} {c.get('desc', '')}".lower()
                 return sum(3 for w in context_words if w in text)
 
-            for cand in sorted(unused_vids, key=score_vid, reverse=True):
+            ranked = sorted(unused_vids, key=score_vid, reverse=True)
+            for cand in ranked:
+                # Topic-level approval is not enough: require at least one meaningful
+                # scene-query/narration term to match the candidate's own metadata.
+                if context_words and score_vid(cand) == 0:
+                    continue
                 saved = self._download_and_validate_video_clip(cand, dest_path)
                 if saved:
                     return saved, cand.get("title", "Verified Archival Video")
@@ -705,7 +714,7 @@ class MediaFetcher:
         )
 
         # 1. Designated AI Hook & Literal Key Beats (Scene 1 Hook + up to `self.max_ai_images` total)
-        is_priority_ai_beat = (scene_id == 1) or (prefer == "ai_image" and scene_id in (4, 5, 7, 8, 10, 11))
+        is_priority_ai_beat = (prefer == "ai_image")
         if is_priority_ai_beat and can_use_ai:
             prompt = img_prompt or (
                 f"Authentic historical documentary photograph literally illustrating: '{narration}' ({self.topic}), "
@@ -758,7 +767,7 @@ class MediaFetcher:
             return pool_img, "image"
 
         # 4. If within our strict AI image cap (`self.ai_images_used < self.max_ai_images`), generate an AI scene
-        if can_use_ai:
+        if can_use_ai and prefer == "ai_image":
             prompt = img_prompt or (
                 f"Authentic historical documentary photograph literally illustrating: '{narration}' ({self.topic}), "
                 "dramatic cinema lighting, 35mm archival film grain, vertical 9:16, no text"
@@ -777,24 +786,20 @@ class MediaFetcher:
                 print(f"[MediaFetcher] Scene {scene_id:02d}: 🎨 AI IMAGE ({self.ai_images_used}/{self.max_ai_images} cap) -> {ai_img.name}")
                 return ai_img, "image"
 
-        # 5. Cost-Cap Protection: Distinct Noir Storyboard Cut from one of the 100% script-true AI plates (FREE, $0 cost!)
-        source_pool = self.ai_generated_images or self.downloaded_scene_images
-        if source_pool:
-            source_img = source_pool[(scene_id - 1) % len(source_pool)]
-            reframed_path = assets_dir / f"scene_{scene_id:02d}_noir_cut.jpg"
-            self._create_distinct_macro_shot(source_img, reframed_path, variant=scene_id)
-            self.reframed_cuts_used += 1
-            self.scene_audit_log.append({
-                "scene_id": scene_id,
-                "kind": "🎞️ NOIR MACRO CUT (FREE)",
-                "source": f"Reframed from {source_img.name} (Cost Cap Active)",
-                "narration": narration,
-            })
-            print(f"[MediaFetcher] Scene {scene_id:02d}: 🎞️ FREE NOIR MACRO CUT (AI cap {self.ai_images_used}/{self.max_ai_images} protected)")
-            return reframed_path, "image"
-
+        # 5. Honest fallback: never reuse an unrelated image for a different historical beat.
+        # A scene-specific editorial card is preferable to visually misleading footage.
         fallback_path = assets_dir / f"scene_{scene_id:02d}_fallback.jpg"
-        self._create_archival_fallback_card(fallback_path)
+        self._create_scene_fallback_card(
+            fallback_path,
+            scene.get("on_screen_callout") or scene.get("narration") or self.topic,
+            scene.get("historical_date") or "",
+        )
+        self.scene_audit_log.append({
+            "scene_id": scene_id,
+            "kind": "🗂️ SCENE-SPECIFIC FALLBACK CARD",
+            "source": "Generated locally; no paid image generation",
+            "narration": narration,
+        })
         return fallback_path, "image"
 
     def _pull_best_from_verified_pool(self, scene_context: str, dest_path: Path) -> Optional[Tuple[Path, str]]:
@@ -929,6 +934,33 @@ class MediaFetcher:
             cropped = ImageEnhance.Contrast(cropped).enhance(1.14)
             cropped = ImageEnhance.Color(cropped).enhance(0.55)
             cropped.save(dest_path, quality=94)
+
+    @staticmethod
+    def _create_scene_fallback_card(dest_path: Path, text: str, date_text: str = ""):
+        """Create a legible editorial interstitial instead of recycling unrelated imagery."""
+        from PIL import ImageDraw, ImageFont
+        import textwrap
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        img = Image.new("RGB", (1080, 1920), (18, 22, 29))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((70, 610, 1010, 1310), outline=(178, 145, 83), width=3)
+        try:
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            font = ImageFont.truetype(font_path, 68)
+            small = ImageFont.truetype(font_path, 34)
+        except OSError:
+            font, small = ImageFont.load_default(), ImageFont.load_default()
+        if date_text:
+            draw.text((110, 690), str(date_text)[:45], fill=(218, 184, 112), font=small)
+        words = textwrap.wrap(str(text).strip(), width=22)[:7]
+        y = 800
+        for line in words:
+            draw.text((110, y), line, fill=(245, 245, 240), font=font)
+            y += 92
+        draw.text((110, 1450), "HISTORICAL ARCHIVE • VISUAL RECONSTRUCTION UNAVAILABLE",
+                  fill=(170, 175, 185), font=small)
+        img.save(dest_path, quality=94)
 
     @staticmethod
     def _create_archival_fallback_card(dest_path: Path):

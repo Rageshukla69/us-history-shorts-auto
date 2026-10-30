@@ -83,7 +83,7 @@ def upload_short_to_youtube(
             "defaultAudioLanguage": "en-US",
         },
         "status": {
-            "privacyStatus": os.getenv("YOUTUBE_PRIVACY_STATUS", "public").strip(),
+            "privacyStatus": os.getenv("YOUTUBE_PRIVACY_STATUS", "unlisted").strip(),
             "selfDeclaredMadeForKids": False,
         },
     }

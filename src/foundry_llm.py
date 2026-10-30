@@ -25,9 +25,9 @@ Write a gripping, fast-paced 48-to-52 second spoken script (~115 to 125 words to
 STRICT VISUAL ROUTING, REAL VIDEO CLIP SOURCING & COST CAP RULES:
 1. 0.0s THUMB-STOPPING HOOK (Scene 1):
    - Scene 1 MUST open with a shocking, counter-intuitive hook containing a concrete year, number, or secret.
-   - ALWAYS set `"prefer_media": "ai_image"` on **Scene 1** so Frame 1 (`00:00`) is a jaw-dropping vertical 9:16 cinema poster!
-2. BALANCED HYBRID MEDIA MIX (4 AI Images + 4–5 Real Video Clips + 3–4 Archival Photos):
-   - Set `"prefer_media": "ai_image"` on **4 scenes** (Scene 1 Hook + the 3 most specific literal scenes where a custom illustration is essential, e.g., a surgeon wiring a cat).
+   - Prefer real, historically accurate archival imagery or relevant footage for Scene 1. Set `prefer_media` to `archival` or `video_clip`; use `ai_image` only when explicitly permitted by MAX_AI_IMAGES_PER_SHORT.
+2. LOW-COST MEDIA MIX (ZERO AI IMAGES BY DEFAULT):
+   - Set `prefer_media` to `video_clip` or `archival` for every scene where relevant real media exists. Use `ai_image` only for a truly unfilmable/specific scene AND only if MAX_AI_IMAGES_PER_SHORT is greater than zero.
    - Set `"prefer_media": "video_clip"` on **5 scenes** where real physical motion footage or archival 16mm/35mm film exists (e.g., vintage tape recorder spinning, 1960s city street traffic, vintage automobile at night, cat walking outdoors, soldiers marching, artillery firing).
    - Set `"prefer_media": "archival"` on **2 to 3 scenes** naming real historical buildings, declassified programs, or historical figures documented on Wikipedia.
 3. PHYSICAL & ARCHIVAL VIDEO QUERIES (`video_pool_queries` + per-scene `video_query`):
@@ -43,6 +43,7 @@ Return ONLY valid JSON matching this schema:
   "title": "Viral US YouTube Short title under 62 chars (include #shorts)",
   "description": "Gripping 2-sentence hook + historical context + #shorts #history #ushistory #documentary",
   "tags": ["history", "shorts", "ushistory", "documentary", "viralhistory"],
+  "research_sources": [{"title": "Source title", "url": "https://..."}],
   "is_space_or_science": false,
   "wikipedia_articles": ["Acoustic Kitty", "Central Intelligence Agency", "Cold War", "Signals intelligence"],
   "video_pool_queries": [
@@ -65,7 +66,7 @@ Return ONLY valid JSON matching this schema:
       "wikimedia_query": "1960s reel to reel tape recorder historical",
       "wikipedia_article": "Acoustic Kitty",
       "image_prompt": "1967 Cold War CIA secret electronics laboratory in Langley Virginia, a sleek grey tabby cat sitting on a wooden workbench beside glowing vintage reel-to-reel tape recorders and a shadowy intelligence officer in a 1960s suit, dramatic noir lighting, 35mm archival film photography, vertical 9:16, no text",
-      "prefer_media": "ai_image",
+      "prefer_media": "archival",
       "effect": "smooth_push_in",
       "on_screen_callout": "1967: $20M SPY"
     }
@@ -149,7 +150,7 @@ class FoundryLLMClient:
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
     def generate_storyboard(self, topic: str) -> Dict[str, Any]:
-        max_ai = int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "4"))
+        max_ai = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "0")))
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -157,9 +158,10 @@ class FoundryLLMClient:
                 "content": (
                     f"Create a high-retention 50-second US History YouTube Short storyboard on: '{topic}'. "
                     "Structure the script into **11 to 12 vivid cinematic story beats** (~10 words per beat, ~120 words total). "
-                    f"CRITICAL HYBRID MIX: Set `prefer_media` to `'ai_image'` on {max_ai} key scenes (ALWAYS including Scene 1 Hook + the 3 most literal action scenes), "
-                    "set `'video_clip'` on 5 scenes (using physical/object/archival `video_query` phrases like vintage machines, vehicles, city streets, nature, or archival hardware — NEVER political speeches or agency names!), "
-                    "and set `'archival'` on 2 to 3 scenes. Output ONLY valid JSON."
+                    f"AI IMAGE BUDGET: at most {max_ai} scenes may use 'ai_image'; prefer ZERO and never force an AI image for the hook. "
+                    "Prefer genuine subject-matched archival photographs and moving footage. For each scene, use precise visual search queries tied to its narration, not generic topic keywords. "
+                    "Do not invent quotations, exact costs, dates, casualty figures, motives, or named participants. If a detail is disputed or uncertain, qualify it. "
+                    "Include a 'research_sources' array of credible source URLs/titles supporting key factual claims. Output ONLY valid JSON."
                 ),
             },
         ]
