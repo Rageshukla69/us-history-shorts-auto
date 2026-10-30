@@ -11,9 +11,9 @@ on:
         required: false
         default: ''
       max_ai_images:
-        description: 'Max paid AI images per Short (default 4; remaining scenes use free video clips & archival photos)'
+        description: 'Maximum paid AI images per Short (default 0 = no paid image generation)'
         required: false
-        default: '4'
+        default: '0'
       dry_run:
         description: 'Skip YouTube upload (true = render & preview MP4 only, false = upload to YouTube)'
         required: false
@@ -67,13 +67,13 @@ jobs:
           FOUNDRY_API_KEY: ${{ secrets.FOUNDRY_API_KEY }}
           FOUNDRY_ENDPOINT: ${{ secrets.FOUNDRY_ENDPOINT }}
           FOUNDRY_IMAGE_MODEL: ${{ secrets.FOUNDRY_IMAGE_MODEL || 'MAI-Image-2.6-Flash' }}
-          MAX_AI_IMAGES_PER_SHORT: ${{ github.event.inputs.max_ai_images || secrets.MAX_AI_IMAGES_PER_SHORT || '4' }}
+          MAX_AI_IMAGES_PER_SHORT: ${{ github.event.inputs.max_ai_images || secrets.MAX_AI_IMAGES_PER_SHORT || '0' }}
           FOUNDRY_TEXT_API_KEY: ${{ secrets.FOUNDRY_TEXT_API_KEY }}
           FOUNDRY_TEXT_ENDPOINT: ${{ secrets.FOUNDRY_TEXT_ENDPOINT }}
           FOUNDRY_TEXT_MODEL: ${{ secrets.FOUNDRY_TEXT_MODEL || 'gpt-6-luna' }}
           SHORTS_PER_DAY: ${{ secrets.SHORTS_PER_DAY || '2' }}
           VOICE_SPEED_PERCENT: ${{ secrets.VOICE_SPEED_PERCENT || '3' }}
-          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}\n          YOUTUBE_PRIVACY_STATUS: ${{ secrets.YOUTUBE_PRIVACY_STATUS || 'unlisted' }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           CUSTOM_TOPIC: ${{ github.event.inputs.custom_topic }}
