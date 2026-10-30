@@ -3,7 +3,6 @@ name: Automated US History Shorts (Every 12 Hours)
 on:
   schedule:
     # Off-peak primary slots (01:25 UTC & 13:25 UTC) + backup slots (04:25 UTC & 16:25 UTC)
-    # `_should_skip_backup_cron_slot()` in `src/main.py` automatically skips the backup slot if the primary slot succeeded!
     - cron: '25 1,4,13,16 * * *'
   workflow_dispatch:
     inputs:
@@ -11,6 +10,10 @@ on:
         description: 'Optional custom history topic (leave blank to auto-pick next unused topic)'
         required: false
         default: ''
+      max_ai_images:
+        description: 'Max paid AI images per Short (default 4; remaining scenes use free video clips & archival photos)'
+        required: false
+        default: '4'
       dry_run:
         description: 'Skip YouTube upload (true = render & preview MP4 only, false = upload to YouTube)'
         required: false
@@ -59,12 +62,12 @@ jobs:
           AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
           AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION || 'centralindia' }}
           AZURE_TTS_VOICE: ${{ secrets.AZURE_TTS_VOICE || 'en-US-BrianMultilingualNeural' }}
-          BG_MUSIC_VOLUME: ${{ secrets.BG_MUSIC_VOLUME || '0.30' }}
+          BG_MUSIC_VOLUME: ${{ secrets.BG_MUSIC_VOLUME || '0.28' }}
           BGM_URL: ${{ secrets.BGM_URL || '' }}
           FOUNDRY_API_KEY: ${{ secrets.FOUNDRY_API_KEY }}
           FOUNDRY_ENDPOINT: ${{ secrets.FOUNDRY_ENDPOINT }}
           FOUNDRY_IMAGE_MODEL: ${{ secrets.FOUNDRY_IMAGE_MODEL || 'MAI-Image-2.6-Flash' }}
-          MAX_AI_IMAGES_PER_SHORT: ${{ secrets.MAX_AI_IMAGES_PER_SHORT || '12' }}
+          MAX_AI_IMAGES_PER_SHORT: ${{ github.event.inputs.max_ai_images || secrets.MAX_AI_IMAGES_PER_SHORT || '4' }}
           FOUNDRY_TEXT_API_KEY: ${{ secrets.FOUNDRY_TEXT_API_KEY }}
           FOUNDRY_TEXT_ENDPOINT: ${{ secrets.FOUNDRY_TEXT_ENDPOINT }}
           FOUNDRY_TEXT_MODEL: ${{ secrets.FOUNDRY_TEXT_MODEL || 'gpt-6-luna' }}
