@@ -50,7 +50,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Synthesize Uplifting Interstellar Documentary Score
+      - name: Synthesize Uplifting Interstellar Documentary Score & Hook Impact
         run: |
           python src/sfx_generator.py
 
@@ -64,7 +64,7 @@ jobs:
           FOUNDRY_API_KEY: ${{ secrets.FOUNDRY_API_KEY }}
           FOUNDRY_ENDPOINT: ${{ secrets.FOUNDRY_ENDPOINT }}
           FOUNDRY_IMAGE_MODEL: ${{ secrets.FOUNDRY_IMAGE_MODEL || 'MAI-Image-2.6-Flash' }}
-          MAX_AI_IMAGES_PER_SHORT: ${{ secrets.MAX_AI_IMAGES_PER_SHORT || '3' }}
+          MAX_AI_IMAGES_PER_SHORT: ${{ secrets.MAX_AI_IMAGES_PER_SHORT || '6' }}
           FOUNDRY_TEXT_API_KEY: ${{ secrets.FOUNDRY_TEXT_API_KEY }}
           FOUNDRY_TEXT_ENDPOINT: ${{ secrets.FOUNDRY_TEXT_ENDPOINT }}
           FOUNDRY_TEXT_MODEL: ${{ secrets.FOUNDRY_TEXT_MODEL || 'gpt-6-luna' }}
