@@ -1,10 +1,11 @@
 """
-Synthesizes (v6.5 — Viral Documentary Sound Design & Timestamp-Synced Scene Transition Whooshes):
+Synthesizes (v7.0 — Dual-Camera Documentary Sound Design: Scene Transition Whooshes + Axial Close-Up Shutter Clicks):
 1. Emotional, uplifting "Interstellar / Viral Documentary" soundtrack (`interstellar_bgm.wav` & `mystery_bgm.wav`).
-2. Netflix-Style 0.0s Hook Impact + Timestamp-Synced Scene Transition Whoosh & Analog Click Track (`generate_scene_transition_sfx_track`):
+2. Timestamp-Synced Dual-Camera SFX Track (`generate_scene_transition_sfx_track`):
    - Fires a deep sub-bass impact drop + metallic shimmer on Frame 1 (`0.0s`) to stop scrolling.
-   - Places a subtle, warm cinematic air-whoosh + archival film projector click at the EXACT `start_sec` of every
-     visual cut (`scenes[1:]`), plus low-end tension risers at the Midpoint Twist (`Scene 7`) and Climax (`Scene 13`)!
+   - Places a warm cinematic air-whoosh at the exact `start_sec` of every new story beat (`scenes[1:]`).
+   - Places a subtle, crisp analog camera lens/shutter transient at the `52%` mark (`start_sec + dur * 0.52`)
+     where `VideoComposer` cuts from Shot A (Wide Establishing) to Shot B (`1.32x` Tight Close-Up)!
 """
 from pathlib import Path
 from typing import List
@@ -43,7 +44,6 @@ def generate_hook_impact_track(duration_sec: float = 60.0, sr: int = 44100) -> n
     left = np.zeros(n_samples, dtype=np.float64)
     right = np.zeros(n_samples, dtype=np.float64)
 
-    # 1. Opening 0.0s - 1.25s Hook Sub-Bass Impact Drop
     hit_len = int(1.25 * sr)
     t_hit = np.linspace(0, 1.25, hit_len, endpoint=False)
     freq_sweep = 38.0 + 68.0 * np.exp(-9.0 * t_hit)
@@ -73,13 +73,6 @@ def generate_hook_impact_track(duration_sec: float = 60.0, sr: int = 44100) -> n
 def generate_scene_transition_sfx_track(
     scenes: List[dict], total_duration_sec: float, out_wav: Path, sr: int = 44100
 ) -> Path:
-    """
-    Builds a custom stereo Sound Design track synced to the EXACT timestamps of every scene cut (`scene["start_sec"]`):
-    - At t = 0.0s (Scene 1 Hook): Deep Theater Sub-Bass Boom + Rising Shimmer.
-    - At every scene transition (`scenes[1:]`): Warm, low-passed cinematic air-whoosh + subtle archival tape click
-      (panned slightly L/R and varied across 3 pitch profiles so transitions feel tactile like Johnny Harris / History Bypass).
-    - At Scene 7 (Midpoint Twist) and Scene 13 (Climax): Adds a 0.7s low-end tension riser leading into the cut!
-    """
     dur = max(15.0, float(total_duration_sec) + 1.5)
     n_samples = int(sr * dur)
     left = np.zeros(n_samples, dtype=np.float64)
@@ -95,61 +88,58 @@ def generate_scene_transition_sfx_track(
     left[:hit_len] += 0.85 * sub_drop
     right[:hit_len] += 0.85 * sub_drop
 
-    # 2. Timestamp-Synced Transition Whooshes + Archival Clicks on every scene cut
+    # 2. Story-Beat Transition Whooshes + Mid-Beat Axial Camera Cut Transients
     for idx, scene in enumerate(scenes):
-        if idx == 0:
-            continue
         cut_sec = float(scene.get("start_sec", 0.0))
-        if cut_sec <= 0.3 or cut_sec + 0.5 >= dur:
-            continue
+        scene_dur = float(scene.get("duration_sec", 3.5))
 
-        # Subtle 0.26s air-whoosh centered right across the cut (starts 0.11s before cut, peaks at cut)
-        w_dur = 0.26
-        w_len = int(w_dur * sr)
-        w_start = max(0, int((cut_sec - 0.11) * sr))
-        w_end = min(n_samples, w_start + w_len)
-        actual_len = w_end - w_start
-        if actual_len <= 100:
-            continue
+        # A. Story-beat transition air-whoosh (on scenes[1:])
+        if idx > 0 and 0.3 < cut_sec < dur - 0.5:
+            w_dur = 0.25
+            w_len = int(w_dur * sr)
+            w_start = max(0, int((cut_sec - 0.10) * sr))
+            w_end = min(n_samples, w_start + w_len)
+            actual_len = w_end - w_start
+            if actual_len > 100:
+                tw = np.linspace(0, w_dur, actual_len, endpoint=False)
+                env = np.sin(np.pi * tw / w_dur) ** 1.6
+                white = rng.standard_normal(actual_len)
+                kernel_size = 28 + (idx % 3) * 10
+                kernel = np.ones(kernel_size) / kernel_size
+                filtered_air = np.convolve(white, kernel, mode="same")
 
-        tw = np.linspace(0, w_dur, actual_len, endpoint=False)
-        env = np.sin(np.pi * tw / w_dur) ** 1.6
+                sweep_f = (110.0 + (idx % 3) * 20.0) + 150.0 * np.sin(np.pi * tw / w_dur)
+                sweep_phase = 2 * np.pi * np.cumsum(sweep_f) / sr
+                tonal_whoosh = np.sin(sweep_phase) * 0.30
+                whoosh_sig = (filtered_air * 0.36 + tonal_whoosh) * env * 0.34
 
-        # Filtered pink-ish air sweep + warm low-mid body
-        white = rng.standard_normal(actual_len)
-        kernel_size = 28 + (idx % 3) * 10
-        kernel = np.ones(kernel_size) / kernel_size
-        filtered_air = np.convolve(white, kernel, mode="same")
+                pan_l = 0.58 if idx % 2 == 0 else 0.42
+                left[w_start:w_end] += whoosh_sig * pan_l
+                right[w_start:w_end] += whoosh_sig * (1.0 - pan_l)
 
-        sweep_f = (110.0 + (idx % 3) * 22.0) + 160.0 * np.sin(np.pi * tw / w_dur)
-        sweep_phase = 2 * np.pi * np.cumsum(sweep_f) / sr
-        tonal_whoosh = np.sin(sweep_phase) * 0.32
+            # Deep documentary bass pulse on midpoint & climax beats
+            if idx in (4, 8) and cut_sec + 0.85 < dur:
+                p_start = int(cut_sec * sr)
+                p_len = int(0.80 * sr)
+                tp = np.linspace(0, 0.80, p_len, endpoint=False)
+                pf = 40.0 + 42.0 * np.exp(-9.0 * tp)
+                p_phase = 2 * np.pi * np.cumsum(pf) / sr
+                pulse = 0.50 * np.sin(p_phase) * np.exp(-3.6 * tp) * np.minimum(1.0, tp / 0.012)
+                left[p_start : p_start + p_len] += pulse
+                right[p_start : p_start + p_len] += pulse
 
-        whoosh_sig = (filtered_air * 0.38 + tonal_whoosh) * env * 0.34
-
-        # Subtle analog projector/shutter transient right at the frame cut (0.015s)
-        click_offset = min(actual_len - 20, int(0.11 * sr))
-        if click_offset > 0:
-            c_len = min(int(0.014 * sr), actual_len - click_offset)
-            tc = np.linspace(0, 0.014, c_len, endpoint=False)
-            click_wave = np.sin(2 * np.pi * 1200.0 * np.exp(-180.0 * tc) * tc) * np.exp(-220.0 * tc) * 0.18
-            whoosh_sig[click_offset : click_offset + c_len] += click_wave
-
-        pan_l = 0.58 if idx % 2 == 0 else 0.42
-        pan_r = 1.0 - pan_l
-        left[w_start:w_end] += whoosh_sig * pan_l
-        right[w_start:w_end] += whoosh_sig * pan_r
-
-        # 3. Add a deep documentary tension pulse on key twist scenes (Scene 6/7, Scene 12/13)
-        if idx in (5, 6, 11, 12) and cut_sec + 0.85 < dur:
-            p_start = int(cut_sec * sr)
-            p_len = int(0.80 * sr)
-            tp = np.linspace(0, 0.80, p_len, endpoint=False)
-            pf = 40.0 + 42.0 * np.exp(-9.0 * tp)
-            p_phase = 2 * np.pi * np.cumsum(pf) / sr
-            pulse = 0.52 * np.sin(p_phase) * np.exp(-3.6 * tp) * np.minimum(1.0, tp / 0.012)
-            left[p_start : p_start + p_len] += pulse
-            right[p_start : p_start + p_len] += pulse
+        # B. Mid-Beat Axial Camera Cut Transient (`start_sec + scene_dur * 0.52`) when `scene_dur >= 2.6`
+        if scene_dur >= 2.6:
+            axial_sec = cut_sec + round(scene_dur * 0.52, 3)
+            if 0.5 < axial_sec < dur - 0.3:
+                a_start = max(0, int((axial_sec - 0.04) * sr))
+                a_len = min(int(0.10 * sr), n_samples - a_start)
+                if a_len > 40:
+                    ta = np.linspace(0, 0.10, a_len, endpoint=False)
+                    # Soft low-frequency lens thump + warm analog shutter click
+                    lens_thump = np.sin(2 * np.pi * (85.0 * np.exp(-25.0 * ta)) * ta) * np.exp(-38.0 * ta) * 0.22
+                    left[a_start : a_start + a_len] += lens_thump
+                    right[a_start : a_start + a_len] += lens_thump
 
     stereo = np.column_stack((left, right))
     save_wav(out_wav, stereo, sample_rate=sr)
@@ -327,7 +317,7 @@ def generate_all_sfx():
 
     hook_impact = generate_hook_impact_track(duration_sec=60.0, sr=sr)
     save_wav(SFX_DIR / "hook_impact.wav", hook_impact, sr)
-    print(f"[SFX] Generated v6.5 Documentary Score + Hook Impact -> {SFX_DIR}")
+    print(f"[SFX] Generated v7.0 Dual-Camera Documentary Score + Hook Impact -> {SFX_DIR}")
 
 
 if __name__ == "__main__":
