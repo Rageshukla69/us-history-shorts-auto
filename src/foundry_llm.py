@@ -1,12 +1,10 @@
 """
-Microsoft Foundry LLM Client (v5.0 — AI Script-to-Clip Semantic Matcher & High-Retention Hook Engine):
+Microsoft Foundry LLM Client (v5.2 — MoneyPrinterTurbo Subject-True Visual Architect & High-Retention Engine):
 - Mapped directly to your Heroku / GitHub Secrets (`FOUNDRY_TEXT_ENDPOINT`, `FOUNDRY_TEXT_API_KEY`, `gpt-6-luna`).
-- Generates word-matched `clip_queries` (`archival_clip_query` + `pexels_query`) for EVERY scene so `MediaFetcher`
-  can pull real moving video clips from Internet Archive (Prelinger/NARA/Newsreels), NASA Video Archive,
-  Wikimedia Commons Video, and Pexels HD that match the exact spoken words on screen!
-- Prioritizes `"prefer_media": "video_clip"` on Scene 1 (0–2.5s Hook), Scene 2, Scene 3, and high-action beats
-  (~60%+ of scenes) while using verified Wikipedia/NASA archival photos for specific historical figures/artifacts
-  and capped `MAI-Image-2.6-Flash` (`MAX_AI_IMAGES_PER_SHORT`) for conceptual close-ups.
+- Combines MoneyPrinterTurbo's subject-true AI scene generation (`MAI-Image-2.6-Flash` on key action beats)
+  with LLM-verified Wikipedia/NASA historical photographs and optional watermark-free Pexels/NASA HD clips.
+- Generates exact word-matched `image_prompt`, `wikimedia_query`, and `pexels_query` fields for EVERY scene
+  so visuals are 100% true to the historical subject and spoken script (zero random Internet Archive / LEGO / unrelated clips).
 """
 import json
 import os
@@ -15,29 +13,29 @@ from typing import Any, Dict, List
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-SYSTEM_PROMPT = """You are an elite viral US YouTube Shorts director ("History Bypass / Johnny Harris / Cleo Abram" style) and AI Script-to-Clip Visual Architect.
+SYSTEM_PROMPT = """You are an elite viral US YouTube Shorts director ("History Bypass / Johnny Harris / Cleo Abram" style) and MoneyPrinterTurbo Subject-True Visual Architect.
 Your goal is 80%+ "Stayed to Watch" retention and high subscriber conversion for a US audience.
 Write a gripping, fast-paced 46-to-52 second spoken script (~115 to 128 words total) broken into 16 to 18 rapid visual scenes.
 
-STRICT RETENTION, SCRIPT-TO-CLIP MATCHING & PACING RULES:
+STRICT RETENTION, SUBJECT-TRUE VISUAL MATCHING & PACING RULES:
 1. 0.0s THUMB-STOPPING HOOK (Scene 1 & Scene 2):
    - Scene 1 MUST start with a shocking, counter-intuitive 5-to-7 word hook containing at least one high-impact power word or number (e.g., "In 1932, Australia lost a war... to birds.", "One dead body fooled Adolf Hitler's entire army.").
    - Never start with slow throat-clearing like "Did you know that in history...".
-2. AI WORD-TO-CLIP MATCHING (`archival_clip_query` + `pexels_query` + `prefer_media` on EVERY scene):
-   - Look at the exact action verbs and nouns spoken in each scene's `narration`.
-   - `archival_clip_query`: A 2-to-4 word search query for public-domain historical motion picture / newsreel footage on Internet Archive, NASA Video, or Wikimedia Video matching the spoken words (e.g., `"WWII tank battle"`, `"rocket launch explosion"`, `"1920s city street"`, `"battleship firing ocean"`, `"vintage factory workers"`, `"atomic bomb test"`).
-   - `pexels_query`: A 2-to-4 word cinematic motion B-roll query matching the physical action/mood of the spoken words (e.g., `"stormy ocean waves"`, `"fire explosion sparks"`, `"running marathon crowd"`, `"ancient stone ruins"`, `"secret top secret documents"`).
+2. 100% SUBJECT-TRUE VISUAL ROUTING (`image_prompt` + `wikimedia_query` + `prefer_media` on EVERY scene):
+   - Look at the exact action verbs, historical figures, and nouns spoken in each scene's `narration`.
+   - `image_prompt`: A vivid, historically accurate vertical 9:16 archival photograph description that depicts the EXACT spoken sentence of this scene (e.g., `"1932 archival war photograph of Royal Australian Artillery soldiers firing a Lewis machine gun at a giant flock of emus running across the Western Australian wheat outback, dramatic documentary realism, vertical 9:16, no text"`).
+   - `wikimedia_query`: A specific 3-to-5 word search query for real historical photographs on Wikimedia Commons matching the exact person, place, weapon, ship, or event named in this scene (e.g., `"Emu War 1932 Australia"`, `"Lewis gun Australian soldiers"`, `"Sir George Pearce Australia"`).
+   - `pexels_query`: A clean 2-to-4 word cinematic B-roll query ONLY if `PEXELS_API_KEY` is active (e.g., `"emu birds running outback"`, `"wheat field wind"`).
    - `prefer_media`:
-     * Set `"prefer_media": "video_clip"` on **Scene 1, Scene 2, Scene 3**, and on **at least 9 to 11 scenes total** where motion/action matches the spoken words!
-     * Set `"prefer_media": "archival"` on scenes naming a specific historical person, specific named ship/artifact, or map documented on Wikipedia.
-     * Set `"prefer_media": "ai_image"` on at most `MAX_AI_IMAGES_PER_SHORT` (2–3) ultra-specific conceptual scenes that have no real footage.
+     * Set `"prefer_media": "ai_image"` on **Scene 1 (the 0.0s Hook)** and on **5 to 6 high-action / dramatic scenes** (`MAX_AI_IMAGES_PER_SHORT = 6`) where an exact word-matched `MAI-Image-2.6-Flash` historical visual makes the viewer stay to watch!
+     * Set `"prefer_media": "archival"` on the remaining scenes where real verified Wikipedia / Wikimedia Commons / NASA historical photographs depict the named historical person, map, machine, or location.
 3. FLASHY CAMERA FX (`effect` per scene):
    - Choose from: `"impact_shake_zoom"` (use on Scene 1 and major plot twists!), `"whip_flash_zoom"`, `"fast_punch_in"`, `"parallax_pan_right"`, `"high_contrast_zoom_out"`.
 4. CANONICAL WIKIPEDIA ARTICLES & STRICT DOMAIN KEYWORDS:
    - `wikipedia_articles`: 3 to 5 exact English Wikipedia article titles for the historical event.
-   - `required_visual_keywords`: 8 to 12 lowercase domain nouns so unrelated modern celebrities or sports homonyms are rejected.
+   - `required_visual_keywords`: 8 to 12 lowercase domain nouns specific to this historical topic so tangential pop-culture comics, toys, or homonyms are strictly rejected.
 5. PUNCHY CALLOUT BADGES & SUBSCRIBE CTA:
-   - `on_screen_callout`: Short 1-3 word uppercase badge under 18 chars (e.g. `"1932 AUSTRALIA"`, `"20,000 EMUS"`, `"TOP SECRET"`).
+   - `on_screen_callout`: Short 1-3 word uppercase badge under 18 chars (e.g. `"NOVEMBER 1932"`, `"20,000 EMUS"`, `"9,860 ROUNDS"`).
    - End the final scene's narration with a punchy cliffhanger twist or 4-word question that makes viewers comment and subscribe.
 
 Return ONLY valid JSON matching this schema:
@@ -52,13 +50,13 @@ Return ONLY valid JSON matching this schema:
     {
       "scene_id": 1,
       "narration": "In 1932, Australia declared war on twenty thousand giant birds—and lost.",
-      "archival_clip_query": "1930s army soldiers truck",
-      "pexels_query": "flock of emus running desert",
+      "archival_clip_query": "Emu War 1932 Australia",
+      "pexels_query": "emu birds running desert",
       "wikimedia_query": "Emu War 1932 Australia historical",
       "nasa_query": "",
       "wikipedia_article": "Emu War",
       "image_prompt": "Dramatic 1932 archival war photograph of Australian soldiers facing thousands of giant emus in the Western Australian outback, vertical 9:16, no text",
-      "prefer_media": "video_clip",
+      "prefer_media": "ai_image",
       "effect": "impact_shake_zoom",
       "on_screen_callout": "NOVEMBER 1932"
     }
@@ -142,7 +140,7 @@ class FoundryLLMClient:
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
     def generate_storyboard(self, topic: str) -> Dict[str, Any]:
-        max_ai = int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "3"))
+        max_ai = int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "6"))
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -150,9 +148,9 @@ class FoundryLLMClient:
                 "content": (
                     f"Create a high-retention 60-second US History YouTube Short storyboard on: '{topic}'. "
                     "Ensure 16 to 18 rapid scenes (6 to 8 words per scene, ~120 words total). "
-                    "CRITICAL FOR RETENTION: Set `prefer_media` to `'video_clip'` on Scene 1, Scene 2, Scene 3, and at least 9 to 11 action scenes total, "
-                    "providing vivid `archival_clip_query` and `pexels_query` phrases that match the exact spoken words of each scene! "
-                    f"Use `'archival'` for specific historical portraits/artifacts and `'ai_image'` on at most {max_ai} conceptual scenes. "
+                    f"CRITICAL FOR SUBJECT ACCURACY & RETENTION: Set `prefer_media` to `'ai_image'` on Scene 1 (0.0s Hook) and on {max_ai} key action scenes total, "
+                    "writing a detailed, historically accurate `image_prompt` that matches the EXACT spoken words of each scene! "
+                    "Set `prefer_media` to `'archival'` on the remaining scenes with specific `wikimedia_query` and `wikipedia_article` values. "
                     "Output ONLY valid JSON."
                 ),
             },
@@ -163,7 +161,7 @@ class FoundryLLMClient:
         storyboard = json.loads(raw_json)
         storyboard["topic"] = topic
         print(
-            f"[FoundryLLM] Generated v5.0 Clip-Synced Storyboard '{storyboard.get('title')}' "
+            f"[FoundryLLM] Generated v5.2 Subject-True Storyboard '{storyboard.get('title')}' "
             f"({len(storyboard.get('scenes', []))} scenes, max_ai={max_ai}) via {self.model}."
         )
         return storyboard
@@ -190,7 +188,7 @@ class FoundryLLMClient:
                         "(with id, title, desc), return a JSON object `{\"approved_ids\": [...]}` containing ONLY the IDs of items "
                         "that genuinely depict the historical event, its era, spacecraft, military hardware, historical figures, or locations. "
                         "STRICTLY REJECT any modern celebrities, actors, singers, athletes, baseball players, red carpet photos, "
-                        "unrelated modern military portraits, or homonym traps."
+                        "comics, cartoons, LEGO toys, unrelated modern military portraits, or homonym traps."
                     ),
                 },
                 {

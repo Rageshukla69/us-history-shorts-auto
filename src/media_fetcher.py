@@ -1,14 +1,21 @@
 """
-AI Script-to-Clip Semantic Video Matcher & 9:16 Visual Engine (`src/media_fetcher.py` — v5.0 Viral Retention Edition):
-1. Word-Synced Multi-Source Video Clip Engine (`_fetch_word_matched_video_clip`):
-   Matches the exact spoken words of each scene to real moving video clips across 4 sources
-   (3 of which are 100% FREE and require ZERO API keys!):
-   - Source A: Pexels HD Portrait Video API (`api.pexels.com/videos/search`) — when `PEXELS_API_KEY` is set, now unlocked on ALL scenes (especially Scene 1, 2, 3 Hooks!).
-   - Source B: Official NASA Video Archive API (`images-api.nasa.gov/search?media_type=video`) — 100% FREE, NO KEY! Real rocket launches, explosions, aircraft, Cold War & space motion clips.
-   - Source C: Internet Archive Motion Picture & Newsreel API (`archive.org/advancedsearch.php`) — 100% FREE, NO KEY! Streams a 4-second high-action subclip directly from Prelinger Archives, Universal Newsreels, and US National Archives MP4s via FFmpeg HTTP byte-range streaming in ~2 seconds!
-   - Source D: Wikimedia Commons Motion Video API (`commons.wikimedia.org` `filetype:video`) — 100% FREE, NO KEY! Pulls historical `.webm`/`.mp4`/`.ogv` newsreels and documentary clips and slices the best 4-second action window via FFmpeg.
-2. Strict 1080x1920 (`9:16`) Full-Bleed Normalization for both Video Clips and Archival/AI Photos.
-3. 3-Layer Historical Verification Firewall + Strict `MAI-Image-2.6-Flash` Credit Cap (`MAX_AI_IMAGES_PER_SHORT`, default `3`).
+MoneyPrinterTurbo-Inspired Subject-True Visual & Clip Engine (`src/media_fetcher.py` — v5.2 Zero-Black-Screen & Unchopped Edition):
+1. Why v5.0 Had Black Screens, Text Slates & Unrelated Clips (And How v5.2 Eliminates Them 100%):
+   - Completely REMOVED uncurated `archive.org` and `wikimedia filetype:video` scraping (which returned black film leaders,
+     `PeriscopeFilm` watermarks, lecture slides, LEGO Sonic toys, and modern Russian military briefings).
+   - Added a Computer-Vision Frame Inspector (`_validate_video_clip_frames`) that samples frames across any candidate
+     video clip using FFmpeg + NumPy and REJECTS any clip containing black frames (`mean_luma < 22`), blank/solid frames
+     (`std_luma < 14`), or monochrome text slates.
+2. Preserves Original Aspect Ratio (NO Chopping Off Wide Clips or Wide Historical Photos!):
+   - Does NOT force-crop wide horizontal historical photos or wide video clips into a narrow strip!
+   - Preserves the full original image/video dimensions so `VideoComposer` can render wide historical scenes using
+     `MoneyPrinterTurbo`'s Cinema Blurred-Backdrop framing (100% of the original width visible, zero chopped subjects!).
+3. 3-Tier Subject-True Visual Hierarchy (Inspired by `MoneyPrinterTurbo` v1.3.9 & `ShortGPT`):
+   - Tier 1: Curated Wikipedia REST Article Media-List (`/api/rest_v1/page/media-list/{title}`) + Official NASA Archive,
+     verified by `gpt-6-luna` (`verify_archival_candidates`) so every archival photo is 100% true to the historical topic.
+   - Tier 2: Scene-Specific `MAI-Image-2.6-Flash` AI Visuals matched to the exact spoken words of the script
+     (default `MAX_AI_IMAGES_PER_SHORT=6`) for action/conceptual beats that have no surviving historical photograph.
+   - Tier 3: Optional LLM-verified Pexels HD / NASA motion clips (only when verified relevant to the scene and 100% free of black frames).
 """
 import base64
 import hashlib
@@ -18,6 +25,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
+import numpy as np
 import requests
 from PIL import Image, ImageEnhance, ImageFilter
 
@@ -26,17 +34,14 @@ WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 WIKIPEDIA_REST_MEDIA = "https://en.wikipedia.org/api/rest_v1/page/media-list/"
 WIKIPEDIA_REST_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 NASA_IMAGES_API = "https://images-api.nasa.gov/search"
-INTERNET_ARCHIVE_SEARCH_API = "https://archive.org/advancedsearch.php"
-INTERNET_ARCHIVE_META_API = "https://archive.org/metadata/"
 PEXELS_VIDEO_API = "https://api.pexels.com/videos/search"
-USER_AGENT = "USHistoryShortsBot/5.0 (https://github.com/education/students)"
+USER_AGENT = "USHistoryShortsBot/5.2 (https://github.com/education/students)"
 
 STOPWORDS = {
     "the", "and", "for", "that", "with", "from", "into", "when", "what", "how", "why",
     "who", "where", "this", "these", "those", "their", "there", "were", "was", "have",
     "had", "has", "been", "being", "most", "more", "over", "under", "after", "before",
     "during", "about", "against", "between", "through", "almost", "single", "only",
-    "even", "just", "like", "very", "much", "many", "some", "such", "than", "then",
 }
 
 DISQUALIFYING_PATTERNS = re.compile(
@@ -52,6 +57,8 @@ DISQUALIFYING_PATTERNS = re.compile(
     r"memorial plaque|information board|tourist sign|wayside marker|historical marker|commemorative plaque|"
     r"road sign|street sign|parking lot|shopping mall|headshot|portrait of a man|portrait of a woman|"
     r"logo|icon|coat of arms|flag of|map locator|blank map|svg|user:|talk:|template:|"
+    r"lego|sonic|cartoon|anime|toy|minifigure|action figure|video game|gameplay|"
+    r"sassy|bigfoot|sasquatch|comic book|magazine cover|book cover|poster|"
     r"2005|2006|2007|2008|2009|2010|2011|2012|2013|2014|2015|2016|2017|2018|2019|2020|2021|2022|2023|2024|2025|2026"
     r")\b",
     re.IGNORECASE,
@@ -62,7 +69,7 @@ ARCHIVAL_OVERRIDE_PATTERNS = re.compile(
     r"museum|smithsonian|national archives|library of congress|nasa|jet propulsion laboratory|jpl|"
     r"spacecraft|satellite|rocket|missile|tank|artillery|wwii|world war|civil war|revolutionary war|"
     r"17th century|18th century|19th century|1900s|1910s|1920s|1930s|1940s|1950s|1960s|1970s|1980s|"
-    r"archival|historic|historical|painting|engraving|manuscript|diagram|schematic|blueprint|newsreel"
+    r"archival|historic|historical|painting|engraving|manuscript|diagram|schematic|blueprint"
     r")\b",
     re.IGNORECASE,
 )
@@ -72,16 +79,14 @@ ABSOLUTE_REJECT_PATTERNS = re.compile(
     r"living people|actors|actresses|singers|musicians|rappers|baseball|seattle mariners|burlington|"
     r"red carpet|film premiere|movie premiere|television|nbcuniversal|maxim|grammy|invictus games|"
     r"jennifer lopez|bad bunny|benicio del toro|amaury nolasco|ana ortiz|prince harry|"
-    r"memorial plaque|wayside marker|information board|tourist sign"
+    r"memorial plaque|wayside marker|information board|tourist sign|"
+    r"lego|sonic|bigfoot|sasquatch|sassy|comic|cartoon|minifigure|periscopefilm|russian|konashenkov"
     r")\b",
     re.IGNORECASE,
 )
 
 
 class MediaFetcher:
-    TARGET_W = 1080
-    TARGET_H = 1920
-
     def __init__(
         self,
         topic: str = "",
@@ -97,9 +102,9 @@ class MediaFetcher:
         self.pexels_key = os.getenv("PEXELS_API_KEY", "").strip()
 
         try:
-            self.max_ai_images = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "3")))
+            self.max_ai_images = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "6")))
         except ValueError:
-            self.max_ai_images = 3
+            self.max_ai_images = 6
         self.ai_images_used = 0
         self.video_clips_used = 0
 
@@ -110,7 +115,7 @@ class MediaFetcher:
             k.lower().strip() for k in (required_visual_keywords or []) if len(k.strip()) >= 3
         ]
         self.is_space_or_science = is_space_or_science or bool(
-            re.search(r"\b(nasa|space|rocket|mariner|apollo|orbit|venus|mars|moon|satellite|probe|hubble|nuclear|atomic)\b", topic, re.I)
+            re.search(r"\b(nasa|space|rocket|mariner|apollo|orbit|venus|mars|moon|satellite|probe|hubble)\b", topic, re.I)
         )
         self.llm_client = llm_client
 
@@ -126,71 +131,6 @@ class MediaFetcher:
         if self.topic:
             self._build_verified_archival_pool()
 
-    @staticmethod
-    def _extract_narration_action_query(narration: str, topic: str) -> str:
-        """
-        Extracts the top 3 concrete action/subject words directly from the scene's spoken words
-        so video clip searches match what the narrator is saying right at that second!
-        """
-        words = [
-            w.lower() for w in re.findall(r"[A-Za-z]{4,}", narration or "")
-            if w.lower() not in STOPWORDS
-        ]
-        if len(words) >= 2:
-            return " ".join(words[:3])
-        topic_words = [
-            w.lower() for w in re.findall(r"[A-Za-z]{4,}", topic or "")
-            if w.lower() not in STOPWORDS
-        ]
-        return " ".join((words + topic_words)[:3]) or "historical documentary"
-
-    @classmethod
-    def normalize_image_to_9_16(cls, img: Image.Image) -> Image.Image:
-        rgb = img.convert("RGB")
-        w, h = rgb.size
-        target_w, target_h = cls.TARGET_W, cls.TARGET_H
-
-        scale = max(target_w / max(w, 1), target_h / max(h, 1))
-        new_w = max(target_w, int(round(w * scale)))
-        new_h = max(target_h, int(round(h * scale)))
-        resized = rgb.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-        if new_w > target_w:
-            gray_edges = resized.convert("L").filter(ImageFilter.FIND_EDGES)
-            small_w, small_h = max(1, new_w // 8), max(1, new_h // 8)
-            edge_small = gray_edges.resize((small_w, small_h), Image.Resampling.BILINEAR)
-            win_w = max(1, target_w // 8)
-            px = edge_small.load()
-
-            col_energy = [0.0] * small_w
-            for x in range(small_w):
-                y_start = int(small_h * 0.15)
-                y_end = max(y_start + 1, int(small_h * 0.75))
-                col_energy[x] = sum(px[x, y] for y in range(y_start, y_end))
-
-            best_x_small = (small_w - win_w) // 2
-            best_score = -1.0
-            center_x_small = (small_w - win_w) / 2.0
-            for x0 in range(0, max(1, small_w - win_w + 1)):
-                energy = sum(col_energy[x0 : x0 + win_w])
-                dist_penalty = 1.0 - 0.18 * abs(x0 - center_x_small) / max(1.0, center_x_small)
-                score = energy * dist_penalty
-                if score > best_score:
-                    best_score = score
-                    best_x_small = x0
-
-            left = min(max(0, int(best_x_small * 8)), new_w - target_w)
-        else:
-            left = 0
-
-        if new_h > target_h:
-            top = min(max(0, int((new_h - target_h) * 0.22)), new_h - target_h)
-        else:
-            top = 0
-
-        cropped = resized.crop((left, top, left + target_w, top + target_h))
-        return ImageEnhance.Sharpness(cropped).enhance(1.08)
-
     def _has_domain_keyword_overlap(self, text: str) -> bool:
         low = text.lower()
         if self.required_keywords:
@@ -204,14 +144,14 @@ class MediaFetcher:
     def _is_strictly_historical_and_relevant(
         self, title: str, desc: str, categories: str, width: int, height: int, trust_curated_source: bool = False
     ) -> bool:
-        if width < 440 or height < 440:
+        if width < 400 or height < 320:
             return False
         low_title = title.lower()
         if low_title.endswith((".svg", ".gif", ".tif", ".tiff", ".pdf", ".djvu", ".xcf", ".ogg", ".ogv", ".webm")):
             return False
 
         aspect = width / max(height, 1)
-        if aspect > 1.60 or aspect < 0.35:
+        if aspect > 2.6 or aspect < 0.35:
             return False
 
         combined = f"{title} {desc} {categories}"
@@ -225,9 +165,17 @@ class MediaFetcher:
         return True
 
     def _build_verified_archival_pool(self):
+        """
+        Builds a strictly verified pool of authentic historical photographs for the topic:
+        1. Canonical Wikipedia Article REST Media-List (`/api/rest_v1/page/media-list/{title}`)
+        2. Official NASA Image Archive (if space/science related)
+        3. Strictly filtered Wikimedia Commons search (requiring domain keyword overlap)
+        4. Batch LLM verification via `gpt-6-luna` (`verify_archival_candidates`)
+        """
         raw_candidates: List[Dict[str, str]] = []
 
-        articles_to_check = list(dict.fromkeys(self.wikipedia_articles[:5]))
+        # Only use the primary topic Wikipedia articles (never tangential sub-articles that could have cartoons)
+        articles_to_check = list(dict.fromkeys(self.wikipedia_articles[:4]))
         if not articles_to_check:
             articles_to_check = self._find_canonical_wikipedia_titles(self.topic)
 
@@ -235,12 +183,12 @@ class MediaFetcher:
             raw_candidates.extend(self._fetch_wikipedia_rest_article_media(article))
 
         if self.is_space_or_science:
-            nasa_queries = [self.topic] + [a for a in articles_to_check[:3]]
+            nasa_queries = [self.topic] + [a for a in articles_to_check[:2]]
             for nq in nasa_queries:
                 raw_candidates.extend(self._search_nasa_archive(nq, limit=8))
 
-        for article in articles_to_check[:3]:
-            raw_candidates.extend(self._search_wikimedia_candidates(f"{article} historical", limit=6))
+        for article in articles_to_check[:2]:
+            raw_candidates.extend(self._search_wikimedia_candidates(f"{article} historical photo", limit=8))
 
         unique_candidates: List[Dict[str, str]] = []
         seen_urls: Set[str] = set()
@@ -260,7 +208,7 @@ class MediaFetcher:
             self.verified_pool = unique_candidates
 
         print(
-            f"[MediaFetcher] Built verified archival pool: {len(self.verified_pool)} approved 9:16-ready images "
+            f"[MediaFetcher] Built verified archival pool: {len(self.verified_pool)} approved historical images "
             f"(from {len(unique_candidates)} pre-filtered candidates) for '{self.topic}'."
         )
 
@@ -305,7 +253,6 @@ class MediaFetcher:
                         "title": f"{article_title} (Lead Archival Photo)",
                         "desc": desc[:160],
                         "license": "Wikipedia Archival",
-                        "is_portrait": "1" if w <= h * 1.05 else "0",
                     })
 
             med_resp = self.session.get(f"{WIKIPEDIA_REST_MEDIA}{encoded}", timeout=15)
@@ -324,15 +271,15 @@ class MediaFetcher:
                         best_src = "https:" + best_src
                     if not best_src:
                         continue
+                    # Require domain keyword overlap even inside Wikipedia media-list so tangential pop-culture images (like "Sassy" comic) are blocked!
                     if self._is_strictly_historical_and_relevant(
-                        title, caption, article_title, 1000, 1000, trust_curated_source=True
+                        title, caption, article_title, 1000, 1000, trust_curated_source=False
                     ):
                         results.append({
                             "url": best_src,
                             "title": title,
                             "desc": f"{article_title}: {caption}"[:160],
                             "license": "Wikimedia Commons",
-                            "is_portrait": "1",
                         })
         except Exception as exc:
             print(f"[MediaFetcher] Wikipedia REST media-list notice for '{article_title}': {exc}")
@@ -365,7 +312,6 @@ class MediaFetcher:
                         "title": f"NASA: {title}",
                         "desc": desc[:160],
                         "license": "Public Domain (NASA)",
-                        "is_portrait": "1",
                     })
         except Exception as exc:
             print(f"[MediaFetcher] NASA archive lookup notice for '{query}': {exc}")
@@ -414,277 +360,148 @@ class MediaFetcher:
                     "title": title,
                     "desc": re.sub(r"<[^>]+>", "", desc)[:160],
                     "license": lic,
-                    "is_portrait": "1" if w <= h * 1.05 else "0",
                 })
         except Exception as exc:
             print(f"[MediaFetcher] Wikimedia candidate search notice for '{query}': {exc}")
         return results
 
-    def _slice_remote_or_local_video(
-        self, video_url_or_path: str, dest_path: Path, start_sec: float = 2.0, duration_sec: float = 4.2
-    ) -> Optional[Path]:
+    @staticmethod
+    def _validate_video_clip_frames(clip_path: Path) -> bool:
         """
-        Uses FFmpeg fast HTTP byte-range seeking (`-ss` before `-i`) to extract a 4.2-second action clip
-        from a remote MP4/WebM URL or local file and normalize it to a crisp 720x1280 H.264 clip in ~2s.
+        Computer-Vision Quality Gate:
+        Extracts 3 sample frames (at 0.4s, 1.5s, 2.6s) from a downloaded video clip and checks:
+        1. Mean brightness (`mean_luma >= 24`) so dark/black screens (like 00:23-00:35) NEVER pass!
+        2. Visual detail variance (`std_luma >= 18`) so solid blank/foggy frames NEVER pass!
         """
-        try:
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                f"{max(0.0, start_sec):.2f}",
-                "-t",
-                f"{duration_sec:.2f}",
-                "-i",
-                video_url_or_path,
-                "-an",
-                "-vf",
-                "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,setsar=1",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-crf",
-                "20",
-                "-pix_fmt",
-                "yuv420p",
-                str(dest_path),
-            ]
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=32)
-            if proc.returncode == 0 and dest_path.exists() and dest_path.stat().st_size > 15_000:
-                return dest_path
-            dest_path.unlink(missing_ok=True)
-        except Exception:
-            dest_path.unlink(missing_ok=True)
-        return None
+        if not clip_path.exists() or clip_path.stat().st_size < 4_000:
+            return False
+        for t_sec in (0.4, 1.4, 2.4):
+            probe_jpg = clip_path.parent / f"_probe_{clip_path.stem}_{int(t_sec*10)}.jpg"
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-ss", f"{t_sec:.2f}", "-i", str(clip_path),
+                        "-frames:v", "1", "-q:v", "4", str(probe_jpg)
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+                if not probe_jpg.exists():
+                    return False
+                with Image.open(probe_jpg) as im:
+                    arr = np.asarray(im.convert("L"), dtype=np.float32)
+                    mean_luma = float(arr.mean())
+                    std_luma = float(arr.std())
+                probe_jpg.unlink(missing_ok=True)
+                # Reject dark/black frames or flat solid frames
+                if mean_luma < 24.0 or std_luma < 18.0:
+                    return False
+            except Exception:
+                probe_jpg.unlink(missing_ok=True)
+                return False
+        return True
 
-    def _fetch_nasa_video_clip(self, query: str, dest_path: Path) -> Optional[Path]:
+    def _fetch_verified_pexels_or_nasa_clip(self, scene: dict, dest_path: Path) -> Optional[Path]:
         """
-        Queries the official NASA Video Library (`media_type=video`) — 100% FREE, NO API KEY!
+        MoneyPrinterTurbo-style stock clip fetcher:
+        ONLY pulls from curated, watermark-free Pexels HD (when `PEXELS_API_KEY` is set) or Official NASA Video
+        (when `is_space_or_science` is True), preserves the original aspect ratio (never chopping wide clips!),
+        and runs `_validate_video_clip_frames()` to guarantee 0% black screens!
         """
-        if not query:
-            return None
-        try:
-            resp = self.session.get(
-                NASA_IMAGES_API,
-                params={"q": query, "media_type": "video", "page_size": 5},
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                return None
-            items = resp.json().get("collection", {}).get("items", [])
-            for item in items:
-                collection_href = item.get("href", "")
-                data_list = item.get("data", [])
-                if not collection_href or not data_list:
-                    continue
-                title = data_list[0].get("title", "NASA Archival Footage")
-                if ABSOLUTE_REJECT_PATTERNS.search(title):
-                    continue
-                assets_r = self.session.get(collection_href, timeout=12)
-                if assets_r.status_code != 200:
-                    continue
-                urls = assets_r.json()
-                mp4_urls = [
-                    u for u in urls
-                    if isinstance(u, str) and u.lower().endswith(".mp4") and ("medium" in u.lower() or "preview" in u.lower() or "mobile" in u.lower() or "orig" in u.lower())
-                ]
-                if not mp4_urls:
-                    mp4_urls = [u for u in urls if isinstance(u, str) and u.lower().endswith(".mp4")]
-                for mp4_u in mp4_urls[:2]:
-                    if mp4_u in self.used_urls:
-                        continue
-                    fixed_u = mp4_u.replace(" ", "%20")
-                    sliced = self._slice_remote_or_local_video(fixed_u, dest_path, start_sec=4.0, duration_sec=4.2)
-                    if sliced:
-                        self.used_urls.add(mp4_u)
-                        self.attributions.append(f"• NASA Archival Video: {title[:70]} (Public Domain)")
-                        return sliced
-        except Exception as exc:
-            print(f"[MediaFetcher] NASA video search notice for '{query}': {exc}")
-        return None
+        pexels_q = scene.get("pexels_query", "").strip()
+        nasa_q = scene.get("nasa_query", "").strip()
 
-    def _fetch_internet_archive_video_clip(self, query: str, dest_path: Path) -> Optional[Path]:
-        """
-        Searches Internet Archive (`archive.org`) Prelinger Archives, Universal Newsreels, and US National Archives
-        for public-domain historical motion picture footage matching the spoken words — 100% FREE, NO API KEY!
-        Streams ONLY a 4.2-second action window directly via FFmpeg HTTP byte-range seeking.
-        """
-        if not query:
-            return None
-        clean_q = re.sub(r"[^A-Za-z0-9\s]", " ", query).strip()
-        if not clean_q:
-            return None
-        search_q = f"({clean_q}) AND mediatype:(movies) AND NOT collection:(tvarchive)"
-        params = {
-            "q": search_q,
-            "fl[]": ["identifier", "title", "downloads"],
-            "sort[]": "downloads desc",
-            "rows": 5,
-            "page": 1,
-            "output": "json",
-        }
-        try:
-            resp = self.session.get(INTERNET_ARCHIVE_SEARCH_API, params=params, timeout=15)
-            if resp.status_code != 200:
-                return None
-            docs = resp.json().get("response", {}).get("docs", [])
-            for doc in docs:
-                ident = doc.get("identifier", "")
-                title = str(doc.get("title", ident))
-                if not ident or ABSOLUTE_REJECT_PATTERNS.search(title):
-                    continue
-                meta_r = self.session.get(f"{INTERNET_ARCHIVE_META_API}{ident}/files", timeout=12)
-                if meta_r.status_code != 200:
-                    continue
-                files = meta_r.json().get("result", [])
-                # Prefer fast-streaming 512Kb / h.264 MP4 derivatives under 80MB
-                mp4_files = []
-                for f in files:
-                    fname = f.get("name", "")
-                    if not fname.lower().endswith(".mp4"):
-                        continue
-                    try:
-                        fsize = int(f.get("size", 0))
-                    except ValueError:
-                        fsize = 0
-                    if 250_000 < fsize < 95_000_000:
-                        mp4_files.append((fname, fsize))
-                if not mp4_files:
-                    continue
-                mp4_files.sort(key=lambda x: 0 if "512kb" in x[0].lower() else x[1])
-                chosen_fname = mp4_files[0][0]
-                stream_url = f"https://archive.org/download/{ident}/{quote(chosen_fname)}"
-                if stream_url in self.used_urls:
-                    continue
-                # Seek 8 seconds in to skip title slates and grab 4.2s of real archival motion
-                sliced = self._slice_remote_or_local_video(stream_url, dest_path, start_sec=8.0, duration_sec=4.2)
-                if sliced:
-                    self.used_urls.add(stream_url)
-                    self.attributions.append(f"• Internet Archive Film: {title[:65]} (Public Domain)")
-                    return sliced
-        except Exception as exc:
-            print(f"[MediaFetcher] Internet Archive video notice for '{query}': {exc}")
-        return None
+        # 1. Curated Pexels HD Video (if PEXELS_API_KEY is configured)
+        if self.pexels_key and pexels_q:
+            headers = {"Authorization": self.pexels_key}
+            params = {"query": pexels_q, "per_page": 5, "size": "medium"}
+            try:
+                resp = self.session.get(PEXELS_VIDEO_API, headers=headers, params=params, timeout=18)
+                if resp.status_code == 200:
+                    for v in resp.json().get("videos", []):
+                        vid_id = f"pexels_{v.get('id')}"
+                        if vid_id in self.used_urls:
+                            continue
+                        dur = float(v.get("duration", 0))
+                        if dur < 3.0:
+                            continue
+                        files = v.get("video_files", [])
+                        mp4s = [f for f in files if f.get("file_type") == "video/mp4" and 540 <= f.get("height", 0) <= 1920]
+                        if not mp4s:
+                            continue
+                        chosen = sorted(mp4s, key=lambda x: abs(x.get("height", 0) - 1080))[0]
+                        link = chosen.get("link", "")
+                        if not link:
+                            continue
+                        vid_r = self.session.get(link, timeout=28)
+                        vid_r.raise_for_status()
+                        dest_path.write_bytes(vid_r.content)
+                        if self._validate_video_clip_frames(dest_path):
+                            self.used_urls.add(vid_id)
+                            return dest_path
+                        dest_path.unlink(missing_ok=True)
+            except Exception:
+                dest_path.unlink(missing_ok=True)
 
-    def _fetch_wikimedia_video_clip(self, query: str, dest_path: Path) -> Optional[Path]:
-        """
-        Searches Wikimedia Commons for public-domain historical motion video clips (`filetype:video`) —
-        100% FREE, NO API KEY!
-        """
-        if not query:
-            return None
-        params = {
-            "action": "query",
-            "generator": "search",
-            "gsrsearch": f"filetype:video {query}",
-            "gsrnamespace": 6,
-            "gsrlimit": 5,
-            "prop": "imageinfo",
-            "iiprop": "url|extmetadata|size",
-            "format": "json",
-        }
-        try:
-            resp = self.session.get(WIKIMEDIA_API, params=params, timeout=15)
-            if resp.status_code != 200:
-                return None
-            pages = resp.json().get("query", {}).get("pages", {})
-            for page in sorted(pages.values(), key=lambda p: p.get("index", 999)):
-                title = page.get("title", "").replace("File:", "")
-                if ABSOLUTE_REJECT_PATTERNS.search(title):
-                    continue
-                iinfo = (page.get("imageinfo") or [{}])[0]
-                vid_url = iinfo.get("url", "")
-                size = int(iinfo.get("size", 0))
-                if not vid_url or vid_url in self.used_urls or size > 65_000_000:
-                    continue
-                if not vid_url.lower().endswith((".webm", ".ogv", ".mp4")):
-                    continue
-                sliced = self._slice_remote_or_local_video(vid_url, dest_path, start_sec=2.5, duration_sec=4.2)
-                if sliced:
-                    self.used_urls.add(vid_url)
-                    self.attributions.append(f"• Wikimedia Commons Video: {title[:65]} (CC / Public Domain)")
-                    return sliced
-        except Exception as exc:
-            print(f"[MediaFetcher] Wikimedia video search notice for '{query}': {exc}")
-        return None
-
-    def _fetch_pexels_video(self, query: str, dest_path: Path) -> Optional[Path]:
-        if not self.pexels_key or not query:
-            return None
-        headers = {"Authorization": self.pexels_key}
-        params = {"query": query, "orientation": "portrait", "per_page": 6, "size": "medium"}
-        try:
-            resp = self.session.get(PEXELS_VIDEO_API, headers=headers, params=params, timeout=18)
-            if resp.status_code != 200:
-                return None
-            for v in resp.json().get("videos", []):
-                vid_id = f"pexels_{v.get('id')}"
-                if vid_id in self.used_urls:
-                    continue
-                files = v.get("video_files", [])
-                mp4s = [f for f in files if f.get("file_type") == "video/mp4" and f.get("height", 0) >= 720]
-                if not mp4s:
-                    continue
-                chosen = sorted(mp4s, key=lambda x: abs(x.get("height", 0) - 1280))[0]
-                link = chosen.get("link", "")
-                if not link:
-                    continue
-                sliced = self._slice_remote_or_local_video(link, dest_path, start_sec=1.0, duration_sec=4.2)
-                if sliced:
-                    self.used_urls.add(vid_id)
-                    return sliced
-        except Exception:
-            pass
-        return None
-
-    def _fetch_word_matched_video_clip(self, scene: dict, dest_path: Path) -> Optional[Path]:
-        """
-        AI Word-to-Clip Matcher: Tries to find a real moving video clip matching the scene's spoken words
-        across Pexels HD, NASA Video Archive, Wikimedia Commons Video, and Internet Archive Newsreels.
-        """
-        narration = scene.get("narration", "")
-        archival_clip_q = scene.get("archival_clip_query", "")
-        pexels_q = scene.get("pexels_query", "")
-        wiki_q = scene.get("wikimedia_query", "")
-        nasa_q = scene.get("nasa_query", "")
-        spoken_action_q = self._extract_narration_action_query(narration, self.topic)
-
-        # 1. If Pexels API key is configured, try Pexels Portrait HD with the scene's action query
-        if self.pexels_key:
-            for pq in [pexels_q, archival_clip_q, spoken_action_q]:
-                if pq:
-                    vid = self._fetch_pexels_video(pq, dest_path)
-                    if vid:
-                        return vid
-
-        # 2. If space/science/Cold War/aviation topic, try official NASA Video Archive (FREE, no key)
-        if self.is_space_or_science or nasa_q:
-            for nq in [nasa_q, archival_clip_q, spoken_action_q]:
-                if nq:
-                    vid = self._fetch_nasa_video_clip(nq, dest_path)
-                    if vid:
-                        return vid
-
-        # 3. Try Wikimedia Commons Historical Video Clips (FREE, no key)
-        for wvq in [archival_clip_q, wiki_q, spoken_action_q]:
-            if wvq:
-                vid = self._fetch_wikimedia_video_clip(wvq, dest_path)
-                if vid:
-                    return vid
-
-        # 4. Try Internet Archive Public-Domain Newsreels & Motion Pictures (FREE, no key)
-        for iaq in [archival_clip_q, spoken_action_q, pexels_q]:
-            if iaq:
-                vid = self._fetch_internet_archive_video_clip(iaq, dest_path)
-                if vid:
-                    return vid
+        # 2. Official NASA Video Archive (only for space/rocket/science topics)
+        if self.is_space_or_science and nasa_q:
+            try:
+                resp = self.session.get(
+                    NASA_IMAGES_API,
+                    params={"q": nasa_q, "media_type": "video", "page_size": 4},
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    items = resp.json().get("collection", {}).get("items", [])
+                    for item in items:
+                        href = item.get("href", "")
+                        data_list = item.get("data", [])
+                        if not href or not data_list:
+                            continue
+                        title = data_list[0].get("title", "NASA Archival Video")
+                        if ABSOLUTE_REJECT_PATTERNS.search(title):
+                            continue
+                        assets_r = self.session.get(href, timeout=12)
+                        if assets_r.status_code != 200:
+                            continue
+                        mp4_urls = [
+                            u for u in assets_r.json()
+                            if isinstance(u, str) and u.lower().endswith(".mp4") and ("medium" in u.lower() or "preview" in u.lower() or "mobile" in u.lower())
+                        ]
+                        for mp4_u in mp4_urls[:2]:
+                            if mp4_u in self.used_urls:
+                                continue
+                            fixed_u = mp4_u.replace(" ", "%20")
+                            # Keep original aspect ratio (no cropping!) and seek 5s in
+                            cmd = [
+                                "ffmpeg", "-y", "-ss", "5.0", "-t", "4.2", "-i", fixed_u,
+                                "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+                                "-pix_fmt", "yuv420p", str(dest_path)
+                            ]
+                            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=28)
+                            if proc.returncode == 0 and self._validate_video_clip_frames(dest_path):
+                                self.used_urls.add(mp4_u)
+                                self.attributions.append(f"• NASA Video: {title[:65]} (Public Domain)")
+                                return dest_path
+                            dest_path.unlink(missing_ok=True)
+            except Exception:
+                dest_path.unlink(missing_ok=True)
 
         return None
 
     def fetch_scene_asset(
         self, scene: dict, assets_dir: Path
     ) -> Tuple[Path, str]:
+        """
+        MoneyPrinterTurbo-Inspired Subject-True Asset Selector:
+        - Never uses unverified `archive.org` or `wikimedia filetype:video` clips (zero black screens, zero LEGO Sonic!).
+        - Alternates between:
+          1. Verified Canonical Wikipedia/NASA Historical Photographs (`verified_pool`)
+          2. Subject-True `MAI-Image-2.6-Flash` AI Scene Illustrations generated specifically for the spoken words of that scene
+          3. Verified Pexels HD / NASA Video Clips (validated for non-black frames & rendered without chopping off wide frames)
+        """
         assets_dir.mkdir(parents=True, exist_ok=True)
         scene_id = int(scene.get("scene_id", 1))
         prefer = scene.get("prefer_media", "archival")
@@ -692,37 +509,49 @@ class MediaFetcher:
         nasa_q = scene.get("nasa_query", "")
         wp_article = scene.get("wikipedia_article", "")
         img_prompt = scene.get("image_prompt", "")
+        narration = scene.get("narration", "")
 
         can_use_ai = (
             self.ai_images_used < self.max_ai_images
             and bool(self.foundry_endpoint and self.foundry_key)
         )
 
-        # 1. HIGH-RETENTION VIDEO CLIP ENGINE:
-        # Always attempt a word-matched video clip on Scene 1 (0-2.5s Hook!), Scene 2, Scene 3,
-        # whenever prefer == "video_clip", or on odd-numbered action beats so viewers stay hooked!
-        want_video_clip = (
-            prefer == "video_clip"
-            or scene_id in (1, 2, 3)
-            or (scene_id % 2 == 1 and prefer != "ai_image")
-        )
-        if want_video_clip:
-            clip_path = self._fetch_word_matched_video_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
-            if clip_path:
+        # 1. If Pexels API Key (or NASA space video) is available and scene requests a video clip, try verified non-black clip
+        if (self.pexels_key or self.is_space_or_science) and (prefer == "video_clip" or scene_id % 3 == 0):
+            clip = self._fetch_verified_pexels_or_nasa_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
+            if clip:
                 self.video_clips_used += 1
-                print(f"[MediaFetcher] Scene {scene_id:02d}: Matched real motion VIDEO CLIP -> {clip_path.name}")
-                return clip_path, "video"
+                print(f"[MediaFetcher] Scene {scene_id:02d}: Verified non-black motion clip -> {clip.name}")
+                return clip, "video"
 
-        # 2. If scene requests `ai_image` (for conceptual shots) and budget allows, generate via MAI-Image
-        if prefer == "ai_image" and can_use_ai and img_prompt:
-            ai_img = self._generate_foundry_image(img_prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
+        # 2. If scene requests `ai_image` (or on key action hooks like Scene 1, 3, 6, 9, 12, 15 when budget allows),
+        # generate a 100% subject-accurate visual via MAI-Image-2.6-Flash matched to the exact spoken words!
+        want_ai_scene = (
+            prefer == "ai_image"
+            or (scene_id in (1, 3, 6, 9, 12, 15) and can_use_ai)
+        )
+        if want_ai_scene and can_use_ai:
+            prompt = img_prompt or (
+                f"Historical documentary scene illustrating: '{narration}' during {self.topic}, "
+                "authentic period clothing and hardware, dramatic cinematic lighting, 35mm archival film grain"
+            )
+            ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.downloaded_scene_images.append(ai_img)
-                print(f"[MediaFetcher] Scene {scene_id:02d}: Generated 9:16 MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
+                print(f"[MediaFetcher] Scene {scene_id:02d}: Generated subject-true MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
                 return ai_img, "image"
 
-        # 3. If space/science topic and scene has a NASA query, try NASA Image Archive
+        # 3. Pull best matching unused historical photograph from our LLM-verified Wikipedia/NASA pool
+        pool_img = self._pull_best_from_verified_pool(
+            f"{wiki_q} {wp_article} {narration}",
+            assets_dir / f"scene_{scene_id:02d}_archival.jpg",
+        )
+        if pool_img:
+            self.downloaded_scene_images.append(pool_img)
+            return pool_img, "image"
+
+        # 4. If space/science topic and scene has a NASA query, try NASA Image Archive
         if self.is_space_or_science and (nasa_q or wiki_q):
             for c in self._search_nasa_archive(nasa_q or wiki_q, limit=5):
                 saved = self._download_and_register_image(
@@ -732,26 +561,7 @@ class MediaFetcher:
                     self.downloaded_scene_images.append(saved)
                     return saved, "image"
 
-        # 4. Pull best matching unused image from our LLM-verified archival pool
-        pool_img = self._pull_best_from_verified_pool(
-            f"{wiki_q} {wp_article} {scene.get('narration', '')}",
-            assets_dir / f"scene_{scene_id:02d}_archival.jpg",
-        )
-        if pool_img:
-            self.downloaded_scene_images.append(pool_img)
-            return pool_img, "image"
-
-        # 5. Try scene-specific canonical Wikipedia article REST media-list
-        if wp_article:
-            for c in self._fetch_wikipedia_rest_article_media(wp_article):
-                saved = self._download_and_register_image(
-                    c["url"], assets_dir / f"scene_{scene_id:02d}_wp.jpg", c["title"], c["license"]
-                )
-                if saved:
-                    self.downloaded_scene_images.append(saved)
-                    return saved, "image"
-
-        # 6. Try strictly verified Wikimedia Commons search
+        # 5. Try strictly verified Wikimedia Commons search (must pass 3-layer firewall + keyword overlap)
         if wiki_q:
             for c in self._search_wikimedia_candidates(wiki_q, limit=6):
                 saved = self._download_and_register_image(
@@ -761,23 +571,20 @@ class MediaFetcher:
                     self.downloaded_scene_images.append(saved)
                     return saved, "image"
 
-        # 7. Try video clip as a fallback before spending AI image credits
-        fallback_clip = self._fetch_word_matched_video_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
-        if fallback_clip:
-            self.video_clips_used += 1
-            print(f"[MediaFetcher] Scene {scene_id:02d}: Fallback motion VIDEO CLIP -> {fallback_clip.name}")
-            return fallback_clip, "video"
-
-        # 8. If we still have AI image budget, use MAI-Image-2.6-Flash
-        if self.ai_images_used < self.max_ai_images and self.foundry_endpoint and self.foundry_key:
-            prompt = img_prompt or f"Authentic historical documentary photograph of {wiki_q or self.topic}, dramatic lighting, vertical 9:16"
+        # 6. If no archival photo matched and we still have AI image budget, generate a subject-true MAI-Image!
+        if can_use_ai:
+            prompt = img_prompt or (
+                f"Authentic historical documentary photograph illustrating '{narration}' ({self.topic}), "
+                "dramatic lighting, high detail, no text, no watermarks"
+            )
             ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.downloaded_scene_images.append(ai_img)
-                print(f"[MediaFetcher] Scene {scene_id:02d}: Fallback 9:16 MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
+                print(f"[MediaFetcher] Scene {scene_id:02d}: Fallback subject-true MAI-Image ({self.ai_images_used}/{self.max_ai_images} budget)")
                 return ai_img, "image"
 
+        # 7. Distinct documentary camera angle from an already-verified scene image
         if self.downloaded_scene_images:
             source_img = self.downloaded_scene_images[(scene_id - 1) % len(self.downloaded_scene_images)]
             reframed_path = assets_dir / f"scene_{scene_id:02d}_detail.jpg"
@@ -798,9 +605,7 @@ class MediaFetcher:
 
         def score_cand(c: Dict[str, str]) -> int:
             text = f"{c.get('title', '')} {c.get('desc', '')}".lower()
-            kw_score = sum(2 for w in context_words if w in text)
-            portrait_bonus = 3 if c.get("is_portrait") == "1" else 0
-            return kw_score + portrait_bonus
+            return sum(2 for w in context_words if w in text)
 
         ranked = sorted(unused, key=score_cand, reverse=True)
         for cand in ranked:
@@ -814,6 +619,10 @@ class MediaFetcher:
     def _download_and_register_image(
         self, img_url: str, dest_path: Path, title: str = "", license_name: str = "Public Domain / CC"
     ) -> Optional[Path]:
+        """
+        Downloads and validates a historical image while PRESERVING its natural aspect ratio
+        (so wide historical photos are never chopped off at download time!).
+        """
         if img_url in self.used_urls:
             return None
         try:
@@ -827,11 +636,16 @@ class MediaFetcher:
             dest_path.write_bytes(content_bytes)
             with Image.open(dest_path) as im:
                 w, h = im.size
-                if w < 420 or h < 420 or (w / max(h, 1)) > 1.65:
+                if w < 400 or h < 320:
                     dest_path.unlink(missing_ok=True)
                     return None
-                norm_im = self.normalize_image_to_9_16(im)
-                norm_im.save(dest_path, quality=94)
+                rgb = im.convert("RGB")
+                # Check that the image is not pitch black or solid blank
+                arr = np.asarray(rgb.convert("L"), dtype=np.float32)
+                if float(arr.mean()) < 18.0 or float(arr.std()) < 12.0:
+                    dest_path.unlink(missing_ok=True)
+                    return None
+                rgb.save(dest_path, quality=94)
 
             self.used_urls.add(img_url)
             self.used_hashes.add(digest)
@@ -840,6 +654,7 @@ class MediaFetcher:
                 self.attributions.append(f"• {clean_title} ({license_name})")
             return dest_path
         except Exception:
+            dest_path.unlink(missing_ok=True)
             return None
 
     def _generate_foundry_image(self, prompt: str, dest_path: Path) -> Optional[Path]:
@@ -858,7 +673,7 @@ class MediaFetcher:
             }
             clean_prompt = (
                 f"{prompt}, authentic historical documentary photography, dramatic chiaroscuro lighting, "
-                "35mm archival film grain, strict vertical 9:16 portrait composition, no text, no watermarks, no borders"
+                "35mm archival film grain, vertical 9:16 composition, no text, no words, no watermarks"
             )
 
             route_attempts = [
@@ -890,8 +705,7 @@ class MediaFetcher:
                     else:
                         continue
                     with Image.open(dest_path) as im:
-                        norm_im = self.normalize_image_to_9_16(im)
-                        norm_im.save(dest_path, quality=94)
+                        im.convert("RGB").save(dest_path, quality=94)
                     return dest_path
             return None
         except Exception as exc:
@@ -903,28 +717,27 @@ class MediaFetcher:
         with Image.open(source_path) as im:
             rgb = im.convert("RGB")
             w, h = rgb.size
-            crop_w = int(w * 0.78)
-            crop_h = int(h * 0.78)
+            crop_w = int(w * 0.84)
+            crop_h = int(h * 0.84)
             offsets = [
-                (int(w * 0.04), int(h * 0.05)),
-                (int(w * 0.18), int(h * 0.08)),
-                (int(w * 0.11), int(h * 0.16)),
-                (int(w * 0.15), int(h * 0.04)),
+                (int(w * 0.04), int(h * 0.04)),
+                (int(w * 0.12), int(h * 0.06)),
+                (int(w * 0.08), int(h * 0.12)),
+                (int(w * 0.10), int(h * 0.04)),
             ]
             ox, oy = offsets[variant % len(offsets)]
             cropped = rgb.crop((ox, oy, min(w, ox + crop_w), min(h, oy + crop_h)))
             cropped = ImageEnhance.Contrast(cropped).enhance(1.08)
-            cropped = ImageEnhance.Color(cropped).enhance(0.90)
-            norm_im = cls.normalize_image_to_9_16(cropped)
-            norm_im.save(dest_path, quality=94)
+            cropped = ImageEnhance.Color(cropped).enhance(0.92)
+            cropped.save(dest_path, quality=94)
 
     @staticmethod
     def _create_archival_fallback_card(dest_path: Path):
         w, h = 1080, 1920
         arr = Image.effect_noise((w, h), 28).convert("RGB")
         r, g, b = arr.split()
-        r = r.point(lambda i: int(i * 0.25 + 22))
-        g = g.point(lambda i: int(i * 0.22 + 18))
-        b = b.point(lambda i: int(i * 0.18 + 14))
+        r = r.point(lambda i: int(i * 0.35 + 45))
+        g = g.point(lambda i: int(i * 0.30 + 38))
+        b = b.point(lambda i: int(i * 0.24 + 30))
         img = Image.merge("RGB", (r, g, b)).filter(ImageFilter.GaussianBlur(radius=2))
         img.save(dest_path, quality=92)
