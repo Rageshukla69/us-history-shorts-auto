@@ -1,17 +1,10 @@
 """
-Synthesizes an emotional, uplifting "Interstellar / Viral Documentary" soundtrack (`interstellar_bgm.wav` & `mystery_bgm.wav`)
-inspired by Hans Zimmer's "Cornfield Chase" / "Time" and top YouTube Shorts documentary channels —
-plus supports custom `.mp3`/`.wav` tracks placed in `assets/bgm/` (just like MoneyPrinterTurbo!).
-
-Musical Architecture ("Cornfield Chase" / Uplifting Documentary Score in A Minor / C Major @ 112 BPM):
-1. Hypnotic Ticking Felt-Piano Arpeggio:
-   Crisp 8th/16th-note repeating minimalist patterns (C5 - E5 - A4 - E5 / B4 - E5 - G4 - E5) with natural
-   hammer-strike envelope and stereo ping-pong delay that creates immediate curiosity and forward momentum.
-2. Warm Cathedral Pipe Organ & Shimmering Synth Pad:
-   Follows the iconic uplifting progression: Fmaj7 -> G6 -> Am9 -> Cmaj7/E, voiced with authentic
-   pipe organ drawbar harmonics (16', 8', 4', 2-2/3', 2') that swell emotionally across the Short.
-3. Soaring High String Ensemble Melody:
-   Sustained legato octave strings singing the uplifting root/fifth intervals above the arpeggio.
+Synthesizes:
+1. Emotional, uplifting "Interstellar / Viral Documentary" soundtrack (`interstellar_bgm.wav` & `mystery_bgm.wav`)
+   inspired by Hans Zimmer's "Cornfield Chase" / "Time".
+2. Netflix-Style 0.0s Hook Impact + Sub-Bass Pulse Track (`hook_impact.wav`):
+   Gives the opening 1.2 seconds of the Short a deep cinematic sub-bass thud + subtle metallic shimmer riser
+   so viewers physically stop scrolling on Frame 1, plus subtle low-end tension pulses at 12s, 24s, and 36s!
 """
 from pathlib import Path
 import wave
@@ -44,11 +37,46 @@ def save_wav(filename: Path, samples: np.ndarray, sample_rate: int = 44100):
         wf.writeframes(stereo.tobytes())
 
 
+def generate_hook_impact_track(duration_sec: float = 60.0, sr: int = 44100) -> np.ndarray:
+    """
+    Synthesizes a 60-second stereo accent track containing:
+    - A deep, theater-grade 0.0s sub-bass impact drop (90Hz -> 36Hz pitch sweep) + subtle high shimmer
+      in the first 1.1 seconds to stop viewers from swiping away.
+    - Subtle low-frequency documentary tension pulses at t=12s, t=24s, t=36s, and t=46s.
+    """
+    n_samples = int(sr * duration_sec)
+    left = np.zeros(n_samples, dtype=np.float64)
+    right = np.zeros(n_samples, dtype=np.float64)
+
+    # 1. Opening 0.0s - 1.2s Hook Sub-Bass Impact Drop
+    hit_len = int(1.2 * sr)
+    t_hit = np.linspace(0, 1.2, hit_len, endpoint=False)
+    freq_sweep = 36.0 + 62.0 * np.exp(-9.5 * t_hit)
+    phase = 2 * np.pi * np.cumsum(freq_sweep) / sr
+    sub_drop = np.sin(phase) * np.exp(-3.2 * t_hit) * np.minimum(1.0, t_hit / 0.012)
+    shimmer_l = 0.14 * np.sin(2 * np.pi * 440.0 * t_hit) * np.exp(-5.5 * t_hit)
+    shimmer_r = 0.14 * np.sin(2 * np.pi * 659.25 * t_hit) * np.exp(-5.5 * t_hit)
+
+    left[:hit_len] += 0.75 * sub_drop + shimmer_l
+    right[:hit_len] += 0.75 * sub_drop + shimmer_r
+
+    # 2. Subtle documentary bass pulses at twist points (12s, 24s, 36s, 46s)
+    for beat_sec in (12.0, 24.0, 36.0, 46.0):
+        if beat_sec + 0.9 >= duration_sec:
+            continue
+        i0 = int(beat_sec * sr)
+        p_len = int(0.85 * sr)
+        tp = np.linspace(0, 0.85, p_len, endpoint=False)
+        pf = 38.0 + 35.0 * np.exp(-10.0 * tp)
+        p_phase = 2 * np.pi * np.cumsum(pf) / sr
+        pulse = 0.42 * np.sin(p_phase) * np.exp(-4.0 * tp) * np.minimum(1.0, tp / 0.015)
+        left[i0 : i0 + p_len] += pulse
+        right[i0 : i0 + p_len] += pulse
+
+    return np.column_stack((left, right))
+
+
 def _piano_note(freq: float, dur_sec: float, sr: int = 44100) -> np.ndarray:
-    """
-    Synthesizes a warm felt-piano / celesta note with soft hammer attack, natural harmonic decay,
-    and slight inharmonicity so arpeggios sound musical and organic.
-    """
     n = int(sr * dur_sec)
     t = np.linspace(0, dur_sec, n, endpoint=False)
 
@@ -65,10 +93,6 @@ def _piano_note(freq: float, dur_sec: float, sr: int = 44100) -> np.ndarray:
 
 
 def _pipe_organ_voice(freq: float, t: np.ndarray) -> np.ndarray:
-    """
-    Synthesizes a warm Hans Zimmer 'Interstellar' cathedral pipe organ voice using
-    classic flute/principal drawbar registrations (16', 8', 4', 2-2/3', 2').
-    """
     return (
         0.35 * np.sin(2 * np.pi * (freq * 0.5) * t)
         + 0.55 * np.sin(2 * np.pi * freq * t)
@@ -79,11 +103,6 @@ def _pipe_organ_voice(freq: float, t: np.ndarray) -> np.ndarray:
 
 
 def generate_interstellar_uplifting_bgm(duration_sec: float = 68.0, sr: int = 44100) -> np.ndarray:
-    """
-    Synthesizes a 68-second stereo uplifting 'Interstellar / Cornfield Chase' style documentary score:
-    - Progression: Fmaj7 -> G6 -> Am9 -> Cmaj7/E (uplifting, awe-inspiring, emotional)
-    - Tempo: 112 BPM (eighth-note pulse = 0.2678s, 4-bar phrase = 8.57s)
-    """
     n_samples = int(sr * duration_sec)
     t = np.linspace(0, duration_sec, n_samples, endpoint=False)
 
@@ -226,13 +245,15 @@ def generate_all_sfx():
     save_wav(SFX_DIR / "mystery_bgm.wav", interstellar_stereo, sr)
     save_wav(SFX_DIR / "ambient_bed.wav", interstellar_stereo, sr)
 
+    hook_impact = generate_hook_impact_track(duration_sec=60.0, sr=sr)
+    save_wav(SFX_DIR / "hook_impact.wav", hook_impact, sr)
+
     silent = np.zeros(int(sr * 0.10), dtype=np.float64)
     for legacy_name in ("whoosh.wav", "pop.wav", "boom.wav", "shutter.wav"):
         save_wav(SFX_DIR / legacy_name, silent, sr)
 
     print(
-        "[AudioEngine] Generated uplifting Interstellar-style organ & piano arpeggio score "
-        "(assets/sfx/interstellar_bgm.wav)."
+        "[AudioEngine] Generated Interstellar score + 0.0s Hook Impact sub-bass drop (assets/sfx/hook_impact.wav)."
     )
 
 

@@ -1,15 +1,16 @@
 """
-Main End-to-End Orchestrator for the Automated US History Shorts Channel (v4.2 — 9:16 Full-Bleed & Pro Creator Captions Edition).
+Main End-to-End Orchestrator for the Automated US History Shorts Channel (v5.0 — Viral Clip-Sync & Flashy Retention Edition).
 Configured to drop-in match your exact Heroku Config Vars (`AZURE_SPEECH_KEY`, `FOUNDRY_TEXT_ENDPOINT`,
 `FOUNDRY_ENDPOINT`, `MAI-Image-2.6-Flash`, `gpt-6-luna`, `YOUTUBE_TOKEN_JSON`, etc.).
 
-Upgrades in v4.2:
-1. Strict 100% Full-Screen 9:16 (`1080x1920`) Visual Normalization (`src/media_fetcher.py` & `src/video_composer.py`) —
-   every single scene fills the vertical 9:16 frame edge-to-edge without ever shrinking into a floating box.
-2. Pro Creator 82pt Montserrat Bold Word-Synced Captions (`src/caption_builder.py`) with 75ms elastic active-word pop,
-   8px outline, 5px shadow, and `MarginV: 530` thumb-stop positioning.
-3. Reliable 12-Hour Schedule & Backup Cron Slot Guard (`_should_skip_backup_cron_slot`) so GitHub Actions never drops
-   a 12-hour window and never double-uploads.
+Upgrades in v5.0:
+1. AI Script-to-Clip Semantic Video Matcher (`src/media_fetcher.py` & `src/foundry_llm.py`) — matches the spoken
+   words of each scene to real motion video clips from Internet Archive (Prelinger/Newsreels/NARA), NASA Video Archive,
+   Wikimedia Commons Video, and Pexels HD (prioritizing Scene 1-3 Hooks and action beats!).
+2. Flashy Retention Visual FX (`src/video_composer.py`) — 55ms optical flash-cuts (zero black fades), damped camera
+   shake on the 0.0s hook, rapid 1.4s–1.9s multi-cut pacing, and a glowing top gold progress bar.
+3. Multi-Color Power-Word Captions + Animated Subscribe CTA (`src/caption_builder.py`) — Danger/Action words pop in
+   Neon Red (118%), Numbers/Stats pop in Electric Green (116%), and regular words pop in Warm Gold (114%).
 """
 from datetime import datetime, timezone
 import json
@@ -30,13 +31,6 @@ HISTORY_FILE = Path("data/upload_history.json")
 
 
 def _should_skip_backup_cron_slot(min_hours_between_uploads: float = 8.0) -> bool:
-    """
-    Because GitHub Actions occasionally drops peak-hour cron triggers under high load,
-    our workflow schedules a primary slot (`01:25` & `13:25` UTC) plus a backup slot
-    (`04:25` & `16:25` UTC). If this is a scheduled cron run (not a manual `workflow_dispatch`
-    run) and a Short was already uploaded within the last `min_hours_between_uploads` hours,
-    we exit cleanly so the channel strictly uploads once every ~12 hours.
-    """
     event_name = os.getenv("GITHUB_EVENT_NAME", "").strip()
     if event_name != "schedule":
         return False
@@ -75,14 +69,14 @@ def run_pipeline():
     temp_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Always ensure the uplifting Interstellar documentary score exists
-    if not (Path("assets/sfx/interstellar_bgm.wav")).exists():
+    # Always ensure the documentary score & 0.0s hook impact accent exist
+    if not (Path("assets/sfx/interstellar_bgm.wav")).exists() or not (Path("assets/sfx/hook_impact.wav")).exists():
         generate_all_sfx()
 
     llm = FoundryLLMClient()
     topic = select_next_topic(llm_client=llm)
 
-    # Step 1: Storyboard & Script via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
+    # Step 1: Storyboard & Word-Matched Clip Queries via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
     storyboard = llm.generate_storyboard(topic)
     scenes = storyboard.get("scenes", [])
     if not scenes:
@@ -94,7 +88,7 @@ def run_pipeline():
         scenes, temp_dir / "audio"
     )
 
-    # Step 3: Fetch Verified 9:16 Archival Photos (Wikipedia REST Media-List + NASA API + LLM Verifier) + Capped `MAI-Image-2.6-Flash`
+    # Step 3: Fetch Word-Matched Video Clips (Internet Archive / NASA / Wikimedia / Pexels) + Verified 9:16 Archival Photos + Capped MAI-Image
     fetcher = MediaFetcher(
         topic=topic,
         era_keywords=storyboard.get("historical_era_keywords", []),
@@ -109,15 +103,16 @@ def run_pipeline():
         scene["asset_type"] = asset_type
 
     print(
-        f"[Pipeline] Visuals ready: used {fetcher.ai_images_used}/{fetcher.max_ai_images} MAI-Image credits "
-        f"and {len(fetcher.used_urls)} verified 9:16 archival photos."
+        f"[Pipeline] v5.0 Visuals ready: {fetcher.video_clips_used} real motion VIDEO CLIPS, "
+        f"{fetcher.ai_images_used}/{fetcher.max_ai_images} MAI-Image credits, "
+        f"and {len(fetcher.used_urls)} total verified assets."
     )
 
-    # Step 4: Generate Pro Creator 82pt Word-Synced Captions (.ass)
+    # Step 4: Generate Pro Creator V5 Multi-Color Word-Synced Captions + Subscribe CTA (.ass)
     ass_path = output_dir / "subtitles.ass"
     generate_synced_ass_captions(word_timings, enriched_scenes, ass_path)
 
-    # Step 5: Render 1080x1920 MP4 with 100% Full-Bleed 9:16 Framing & Custom/Interstellar BGM Ducking
+    # Step 5: Render 1080x1920 MP4 with Flash-Cuts, Camera Shake, Progress Bar & BGM Ducking
     composer = VideoComposer()
     final_mp4 = output_dir / "final_short.mp4"
     composer.render_short(enriched_scenes, master_vo, ass_path, final_mp4, temp_dir / "segments")
@@ -129,6 +124,7 @@ def run_pipeline():
                 "topic": topic,
                 "title": storyboard.get("title"),
                 "description": storyboard.get("description"),
+                "video_clips_used": fetcher.video_clips_used,
                 "ai_images_used": fetcher.ai_images_used,
                 "max_ai_images_cap": fetcher.max_ai_images,
                 "verified_pool_size": len(fetcher.verified_pool),
@@ -149,10 +145,10 @@ def run_pipeline():
         attributions=fetcher.attributions,
     )
 
-    # Step 7: Only mark topic as used if not in dry_run mode
+    # Step 7: Mark topic as used and push immediately to GitHub
     if video_id != "dry_run_id":
         mark_topic_completed(topic, video_id=video_id, title=storyboard.get("title", topic))
-    print(f"[Pipeline] Completed run for topic: '{topic}' (video_id={video_id})")
+    print(f"[Pipeline] Completed v5.0 run for topic: '{topic}' (video_id={video_id})")
 
 
 if __name__ == "__main__":

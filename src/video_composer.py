@@ -1,13 +1,19 @@
 """
-Professional Documentary Video Composer (v4.2 — 100% Full-Screen 9:16 Vertical Framing).
-Key Upgrades:
-1. Strict 100% Full-Bleed 9:16 Vertical Framing (`_prepare_vertical_archival_plate` + `_smart_crop_9_16`):
-   - Every single scene image fills the entire 9:16 (`1260x2240` oversampled -> `1080x1920`) vertical canvas
-     edge-to-edge using subject-aware salience detection and upper-third portrait bias (`0.22`).
-   - Completely eliminates floating horizontal boxes, borders, or mid-video dimension changes!
-2. Multi-Source Background Music Selector (`_select_bgm_track`):
-   - Automatically uses your custom track in `assets/bgm/` (such as `Dark cinema.mp3`) or `BGM_URL`,
-     or falls back to the built-in Hans Zimmer "Interstellar" score with smooth sidechain voiceover ducking.
+Professional Documentary Video Composer (v5.0 — Flashy Viral Retention & Clip-Sync Engine):
+Key Retention & Subscriber-Conversion Upgrades:
+1. Real Motion Video Clip Integration + Speed-Ramp Polish (`_render_scene_segment`):
+   - Seamlessly mixes real 9:16 motion video clips (from NASA, Internet Archive Newsreels, Wikimedia Video, and Pexels)
+     with dynamic 2.5D Ken Burns + Camera-Shake archival plates.
+2. Flash-Cut Whip Transitions (ZERO Black Fades Between Scenes!):
+   - Removed the old fade-to-black between scenes (which caused viewers to swipe away).
+   - Every cut now hits with a 55ms high-energy cinema flash + motion blur (`eq=brightness=0.14:enable='lt(t,0.055)',gblur=sigma=6:enable='lt(t,0.055)'`).
+3. Decaying Handheld Camera Shake (`impact_shake_zoom`) on Scene 1 Hook & Major Twists:
+   - Physically stops the scroll in the first 0.5 seconds with a punch-in zoom + damped camera shake.
+4. Rapid 1.4s–1.9s Visual Cut Pacing:
+   - Any scene longer than 2.4 seconds automatically splits into Wide Action + Tight Punch-In Close-up so the screen
+     changes every 1.4–1.9 seconds.
+5. Glowing Top Gold Retention Progress Bar + 0.0s Hook Impact Audio Accent:
+   - Draws a sleek 6px gold progress bar along the top edge (`y=0..6`) and mixes a subtle sub-bass hook riser at `t=0.0s`.
 """
 import os
 import random
@@ -39,11 +45,6 @@ class VideoComposer:
 
     @classmethod
     def _smart_crop_9_16(cls, rgb: Image.Image, target_w: int, target_h: int) -> Image.Image:
-        """
-        Scales and crops ANY image to fill the exact `target_w x target_h` (9:16) vertical canvas
-        edge-to-edge without any letterbox bars or floating boxes, using edge-energy salience
-        detection horizontally and upper-third bias (`0.22`) vertically.
-        """
         w, h = rgb.size
         scale = max(target_w / max(w, 1), target_h / max(h, 1))
         new_w = max(target_w, int(round(w * scale)))
@@ -84,22 +85,18 @@ class VideoComposer:
             top = 0
 
         plate = resized.crop((left, top, left + target_w, top + target_h))
-        plate = ImageEnhance.Contrast(plate).enhance(1.05)
-        plate = ImageEnhance.Sharpness(plate).enhance(1.08)
+        plate = ImageEnhance.Contrast(plate).enhance(1.08)
+        plate = ImageEnhance.Color(plate).enhance(1.06)
+        plate = ImageEnhance.Sharpness(plate).enhance(1.10)
         return plate
 
     @classmethod
     def _prepare_vertical_archival_plate(cls, asset_path: Path, out_plate_path: Path) -> Path:
-        """
-        Prepares a 1260x2240 full-bleed 9:16 vertical plate for 100% of scenes so the video
-        NEVER changes aspect ratio or drops into a smaller floating box mid-video.
-        """
         with Image.open(asset_path) as im:
             rgb = im.convert("RGB")
             target_w, target_h = cls.OVERSAMPLE_W, cls.OVERSAMPLE_H
             plate = cls._smart_crop_9_16(rgb, target_w, target_h)
 
-            # Smooth bottom & top cinema gradient vignette so 82pt Pro Creator captions pop cleanly
             plate_rgba = plate.convert("RGBA")
             grad = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
             grad_px = grad.load()
@@ -130,29 +127,37 @@ class VideoComposer:
         output_mp4.parent.mkdir(parents=True, exist_ok=True)
 
         segment_files: List[Path] = []
+        total_duration = sum(max(0.8, float(s.get("duration_sec", 2.5))) for s in scenes)
 
         for idx, scene in enumerate(scenes):
             scene_id = scene.get("scene_id", idx + 1)
             dur = max(0.8, float(scene["duration_sec"]))
             asset_path = Path(scene["asset_path"])
             asset_type = scene["asset_type"]
-            effect = scene.get("effect", "blur_snap_zoom_in")
+            effect = scene.get("effect", "impact_shake_zoom" if idx == 0 else "whip_flash_zoom")
 
             if asset_type == "image":
                 plate_path = temp_dir / f"plate_{scene_id:02d}.jpg"
                 asset_path = self._prepare_vertical_archival_plate(asset_path, plate_path)
 
-            if dur > 3.8:
+            # Rapid 1.4s-1.9s visual cut pacing: split any scene > 2.4s into two distinct dynamic camera angles!
+            if dur > 2.4:
                 half1 = round(dur * 0.52, 3)
                 half2 = round(dur - half1, 3)
                 seg1 = temp_dir / f"seg_{scene_id:02d}_a.mp4"
                 seg2 = temp_dir / f"seg_{scene_id:02d}_b.mp4"
-                self._render_scene_segment(asset_path, asset_type, half1, effect, seg1, cam_mode=idx % 4, tight_crop=False)
-                self._render_scene_segment(asset_path, asset_type, half2, "fast_punch_in", seg2, cam_mode=(idx + 1) % 4, tight_crop=True)
+                self._render_scene_segment(
+                    asset_path, asset_type, half1, effect, seg1, cam_mode=idx % 4, tight_crop=False, is_hook=(idx == 0)
+                )
+                self._render_scene_segment(
+                    asset_path, asset_type, half2, "fast_punch_in", seg2, cam_mode=(idx + 2) % 4, tight_crop=True, is_hook=False
+                )
                 segment_files.extend([seg1, seg2])
             else:
                 seg = temp_dir / f"seg_{scene_id:02d}.mp4"
-                self._render_scene_segment(asset_path, asset_type, dur, effect, seg, cam_mode=idx % 4, tight_crop=False)
+                self._render_scene_segment(
+                    asset_path, asset_type, dur, effect, seg, cam_mode=idx % 4, tight_crop=False, is_hook=(idx == 0)
+                )
                 segment_files.append(seg)
 
         concat_file = temp_dir / "video_segments.txt"
@@ -187,6 +192,13 @@ class VideoComposer:
             .replace(":", "\\:")
             .replace("=", "\\=")
         )
+        tot_d = max(10.0, total_duration)
+        # Add a sleek 6px glowing gold retention progress bar at the very top of the frame + burn-in ASS subtitles
+        vf_final = (
+            f"vignette=PI/7,"
+            f"drawbox=x=0:y=0:w='iw*min(1,t/{tot_d:.2f})':h=6:color=0xFFD700@0.92:t=fill,"
+            f"ass=filename='{ass_escaped}'"
+        )
         final_cmd = [
             "ffmpeg",
             "-y",
@@ -195,7 +207,7 @@ class VideoComposer:
             "-i",
             str(mixed_audio_wav),
             "-vf",
-            f"vignette=PI/6,ass=filename='{ass_escaped}'",
+            vf_final,
             "-c:v",
             "libx264",
             "-preset",
@@ -214,7 +226,7 @@ class VideoComposer:
             str(output_mp4),
         ]
         self._run_ffmpeg(final_cmd, "final subtitle burn-in and master encode")
-        print(f"[VideoComposer] Rendered final 1080x1920 Short -> {output_mp4} ({output_mp4.stat().st_size // 1024} KB)")
+        print(f"[VideoComposer] Rendered v5.0 Flashy 1080x1920 Short -> {output_mp4} ({output_mp4.stat().st_size // 1024} KB)")
         return output_mp4
 
     def _render_scene_segment(
@@ -226,43 +238,48 @@ class VideoComposer:
         out_path: Path,
         cam_mode: int = 0,
         tight_crop: bool = False,
+        is_hook: bool = False,
     ):
-        frames = max(int(round(duration * self.FPS)), 20)
+        frames = max(int(round(duration * self.FPS)), 18)
 
-        if tight_crop or effect == "fast_punch_in":
-            z_expr = f"min(1.10+0.12*(on/{frames}),1.22)"
-            x_expr = "iw/2-(iw/zoom/2)"
+        # Flashy camera motion & damped impact camera shake on hooks and punch-ins
+        if is_hook or effect == "impact_shake_zoom":
+            z_expr = f"min(1.04+0.18*(on/{frames}),1.22)"
+            x_expr = "iw/2-(iw/zoom/2)+sin(on*1.9)*12*exp(-on/10)"
+            y_expr = "ih/2-(ih/zoom/2)+cos(on*2.3)*10*exp(-on/10)"
+        elif tight_crop or effect == "fast_punch_in":
+            z_expr = f"min(1.12+0.14*(on/{frames}),1.26)"
+            x_expr = "iw/2-(iw/zoom/2)+sin(on*1.7)*6*exp(-on/8)"
             y_expr = "ih/2-(ih/zoom/2)"
         elif effect == "high_contrast_zoom_out" or cam_mode == 1:
-            z_expr = f"max(1.14-0.12*(on/{frames}),1.02)"
+            z_expr = f"max(1.18-0.15*(on/{frames}),1.03)"
             x_expr = "iw/2-(iw/zoom/2)"
             y_expr = "ih/2-(ih/zoom/2)"
         elif cam_mode == 2:
-            z_expr = "1.10"
+            z_expr = "1.12"
             x_expr = f"(iw-iw/zoom)*(on/{frames})"
             y_expr = "ih/2-(ih/zoom/2)"
         elif cam_mode == 3:
-            z_expr = "1.10"
+            z_expr = "1.12"
             x_expr = "iw/2-(iw/zoom/2)"
             y_expr = f"(ih-ih/zoom)*(on/{frames})"
         else:
-            z_expr = f"min(1.01+0.12*(on/{frames}),1.13)"
+            z_expr = f"min(1.02+0.15*(on/{frames}),1.17)"
             x_expr = "iw/2-(iw/zoom/2)"
             y_expr = "ih/2-(ih/zoom/2)"
 
-        color_grade = "eq=contrast=1.06:saturation=0.96:brightness=-0.01"
-        if effect == "vintage_sepia_zoom":
-            color_grade = "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131,eq=contrast=1.10"
-
-        fade_out_st = max(0.10, duration - 0.14)
+        # Crisp documentary color grade + 55ms optical flash-cut entrance (NO black fade-outs!)
+        flash_cut = (
+            "eq=contrast=1.08:saturation=1.06:brightness=0.14:enable='lt(t,0.055)',"
+            "eq=contrast=1.06:saturation=1.04:enable='gte(t,0.055)',"
+            "gblur=sigma=6:enable='lt(t,0.055)'"
+        )
 
         if asset_type == "image":
             vf = (
                 f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':"
                 f"d={frames}:s={self.WIDTH}x{self.HEIGHT}:fps={self.FPS},"
-                f"{color_grade},"
-                f"gblur=sigma=8:enable='lt(t,0.10)',"
-                f"fade=t=in:st=0:d=0.10,fade=t=out:st={fade_out_st:.2f}:d=0.12,"
+                f"{flash_cut},"
                 f"setsar=1,format=yuv420p"
             )
             cmd = [
@@ -288,15 +305,15 @@ class VideoComposer:
                 str(out_path),
             ]
         else:
-            scale_w = 1380 if tight_crop else 1140
-            scale_h = 2450 if tight_crop else 2020
+            # Real motion video clip: full-bleed 9:16 crop + tight punch-in on second beat + cinema grade + bottom caption vignette
+            scale_w = 1320 if tight_crop else 1120
+            scale_h = 2346 if tight_crop else 1990
             vf = (
                 f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=increase,"
                 f"crop={self.WIDTH}:{self.HEIGHT},"
                 f"fps={self.FPS},"
-                f"{color_grade},"
-                f"gblur=sigma=8:enable='lt(t,0.10)',"
-                f"fade=t=in:st=0:d=0.10,fade=t=out:st={fade_out_st:.2f}:d=0.12,"
+                f"drawbox=x=0:y=ih*0.70:w=iw:h=ih*0.30:color=0x08080C@0.42:t=fill,"
+                f"{flash_cut},"
                 f"setsar=1,format=yuv420p"
             )
             cmd = [
@@ -363,31 +380,61 @@ class VideoComposer:
         temp_dir: Path,
     ):
         bgm_track = self._select_bgm_track(temp_dir)
+        hook_sfx = Path("assets/sfx/hook_impact.wav")
 
-        filter_complex = (
-            "[0:a]volume=1.05,asplit=2[vo_main][vo_sc];"
-            f"[1:a]volume={self.bg_music_vol:.2f}[bgm_raw];"
-            "[bgm_raw][vo_sc]sidechaincompress=threshold=0.03:ratio=3.5:attack=35:release=350[bgm_ducked];"
-            "[vo_main][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.95[aout]"
-        )
-
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(master_vo),
-            "-stream_loop",
-            "-1",
-            "-i",
-            str(bgm_track),
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[aout]",
-            "-ar",
-            "44100",
-            "-ac",
-            "2",
-            str(out_wav),
-        ]
-        self._run_ffmpeg(cmd, "master audio mix with Interstellar BGM ducking")
+        if hook_sfx.exists():
+            filter_complex = (
+                "[0:a]volume=1.08,asplit=2[vo_main][vo_sc];"
+                f"[1:a]volume={self.bg_music_vol:.2f}[bgm_raw];"
+                "[bgm_raw][vo_sc]sidechaincompress=threshold=0.03:ratio=3.5:attack=35:release=350[bgm_ducked];"
+                "[2:a]volume=0.38[hook_sfx];"
+                "[vo_main][bgm_ducked][hook_sfx]amix=inputs=3:duration=first:dropout_transition=2,alimiter=limit=0.95[aout]"
+            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(master_vo),
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(bgm_track),
+                "-i",
+                str(hook_sfx),
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[aout]",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                str(out_wav),
+            ]
+        else:
+            filter_complex = (
+                "[0:a]volume=1.08,asplit=2[vo_main][vo_sc];"
+                f"[1:a]volume={self.bg_music_vol:.2f}[bgm_raw];"
+                "[bgm_raw][vo_sc]sidechaincompress=threshold=0.03:ratio=3.5:attack=35:release=350[bgm_ducked];"
+                "[vo_main][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.95[aout]"
+            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(master_vo),
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(bgm_track),
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[aout]",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                str(out_wav),
+            ]
+        self._run_ffmpeg(cmd, "master audio mix with BGM ducking and 0.0s hook impact")

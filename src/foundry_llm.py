@@ -1,16 +1,12 @@
 """
-Microsoft Foundry LLM Client mapped directly to your Heroku Config Vars:
-- `FOUNDRY_TEXT_ENDPOINT` (falls back to `FOUNDRY_ENDPOINT`)
-- `FOUNDRY_TEXT_API_KEY` (falls back to `FOUNDRY_API_KEY`)
-- `FOUNDRY_TEXT_MODEL` (defaults to `gpt-6-luna`)
-
-Inspired by `ShortGPT` and `MoneyPrinterTurbo`:
-- Generates exact `wikipedia_articles` (canonical Wikipedia page titles) so `MediaFetcher` can query
-  Wikipedia's official `/api/rest_v1/page/media-list/{title}` endpoint for 100% curated historical photos.
-- Generates `required_visual_keywords` (strict domain nouns that MUST appear in any Wikimedia/NASA candidate's
-  metadata) so homonym traps like "Atlas" (Jennifer Lopez movie) or "Mariner" (baseball player) are impossible.
-- Provides a lightweight `verify_archival_candidates` LLM filter that double-checks candidate image titles/captions
-  before they can ever appear in your video.
+Microsoft Foundry LLM Client (v5.0 — AI Script-to-Clip Semantic Matcher & High-Retention Hook Engine):
+- Mapped directly to your Heroku / GitHub Secrets (`FOUNDRY_TEXT_ENDPOINT`, `FOUNDRY_TEXT_API_KEY`, `gpt-6-luna`).
+- Generates word-matched `clip_queries` (`archival_clip_query` + `pexels_query`) for EVERY scene so `MediaFetcher`
+  can pull real moving video clips from Internet Archive (Prelinger/NARA/Newsreels), NASA Video Archive,
+  Wikimedia Commons Video, and Pexels HD that match the exact spoken words on screen!
+- Prioritizes `"prefer_media": "video_clip"` on Scene 1 (0–2.5s Hook), Scene 2, Scene 3, and high-action beats
+  (~60%+ of scenes) while using verified Wikipedia/NASA archival photos for specific historical figures/artifacts
+  and capped `MAI-Image-2.6-Flash` (`MAX_AI_IMAGES_PER_SHORT`) for conceptual close-ups.
 """
 import json
 import os
@@ -19,47 +15,52 @@ from typing import Any, Dict, List
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-SYSTEM_PROMPT = """You are an elite viral US documentary director and "ShortGPT / MoneyPrinterTurbo" visual architect for 60-second YouTube Shorts on History & Science.
-Your audience is in the United States. Write in punchy, natural American English.
-Your job is to write a gripping, factually accurate 46-to-54 second spoken script (~115 to 130 words total, strictly under 58 seconds) and break it into 16 to 18 rapid visual scenes.
+SYSTEM_PROMPT = """You are an elite viral US YouTube Shorts director ("History Bypass / Johnny Harris / Cleo Abram" style) and AI Script-to-Clip Visual Architect.
+Your goal is 80%+ "Stayed to Watch" retention and high subscriber conversion for a US audience.
+Write a gripping, fast-paced 46-to-52 second spoken script (~115 to 128 words total) broken into 16 to 18 rapid visual scenes.
 
-STRICT PACING & ARCHIVAL ACCURACY GUARDRAILS:
-1. ZERO 4-SECOND SHOTS: Every single scene MUST correspond to 5 to 9 spoken words (~2.0 to 3.3 seconds).
-2. HIGH-RETENTION HOOK (Scene 1 & 2): Start in the middle of the action or a shocking historical paradox in the first 3 seconds.
-3. CANONICAL WIKIPEDIA ARTICLES (`wikipedia_articles` at top level, plus `wikipedia_article` per scene):
-   - Provide 3 to 5 exact, canonical English Wikipedia article titles for the historical event and its key hardware/people/locations (e.g., `["Mariner 1", "Mariner program", "Atlas-Agena", "Cape Canaveral Space Force Station", "Jet Propulsion Laboratory"]`).
-4. STRICT DOMAIN KEYWORDS (`required_visual_keywords` at top level):
-   - Provide 8 to 12 strict historical/domain nouns (lowercase) that identify authentic imagery for this topic (e.g., `["mariner", "nasa", "atlas", "agena", "spacecraft", "rocket", "launch", "cape canaveral", "venus", "probe", "satellite", "jpl"]`).
-   - Any external archival image that does not match at least one of these words will be rejected.
-5. UNAMBIGUOUS ARCHIVAL SEARCH QUERIES (NO HOMONYM TRAPS):
-   - Never write ambiguous queries like `"Atlas"` (matches a Jennifer Lopez movie) or `"Mariner"` (matches baseball players) or `"Range safety officer"` (matches modern military portraits).
-   - Always include the year, program/agency, and object type in `wikimedia_query` and `nasa_query` (e.g., `"Mariner 1 spacecraft NASA 1962"`, `"Atlas Agena rocket launch Cape Canaveral 1962"`, `"NASA Jet Propulsion Laboratory control room 1962"`).
-6. SMART AI vs ARCHIVAL MIX (`prefer_media`):
-   - Set `"prefer_media": "archival"` for scenes depicting real spacecraft, battlefields, historical figures, maps, or equipment documented in Wikipedia/NASA archives.
-   - Set `"prefer_media": "ai_image"` for dramatic close-ups or conceptual scenes that have no real photograph (e.g. `"A handwritten mathematical equation losing an overbar"`, `"Investigators examining telemetry tape"`), up to the `MAX_AI_IMAGES_PER_SHORT` cap.
-7. SHORT BOUNDARY-SAFE CALLOUT BADGES:
-   - `on_screen_callout`: Short 1-3 word punchy date, location, or stat under 18 characters (e.g. "JULY 1962", "CAPE CANAVERAL", "$80M LOSS"). Leave empty `""` on half the scenes.
+STRICT RETENTION, SCRIPT-TO-CLIP MATCHING & PACING RULES:
+1. 0.0s THUMB-STOPPING HOOK (Scene 1 & Scene 2):
+   - Scene 1 MUST start with a shocking, counter-intuitive 5-to-7 word hook containing at least one high-impact power word or number (e.g., "In 1932, Australia lost a war... to birds.", "One dead body fooled Adolf Hitler's entire army.").
+   - Never start with slow throat-clearing like "Did you know that in history...".
+2. AI WORD-TO-CLIP MATCHING (`archival_clip_query` + `pexels_query` + `prefer_media` on EVERY scene):
+   - Look at the exact action verbs and nouns spoken in each scene's `narration`.
+   - `archival_clip_query`: A 2-to-4 word search query for public-domain historical motion picture / newsreel footage on Internet Archive, NASA Video, or Wikimedia Video matching the spoken words (e.g., `"WWII tank battle"`, `"rocket launch explosion"`, `"1920s city street"`, `"battleship firing ocean"`, `"vintage factory workers"`, `"atomic bomb test"`).
+   - `pexels_query`: A 2-to-4 word cinematic motion B-roll query matching the physical action/mood of the spoken words (e.g., `"stormy ocean waves"`, `"fire explosion sparks"`, `"running marathon crowd"`, `"ancient stone ruins"`, `"secret top secret documents"`).
+   - `prefer_media`:
+     * Set `"prefer_media": "video_clip"` on **Scene 1, Scene 2, Scene 3**, and on **at least 9 to 11 scenes total** where motion/action matches the spoken words!
+     * Set `"prefer_media": "archival"` on scenes naming a specific historical person, specific named ship/artifact, or map documented on Wikipedia.
+     * Set `"prefer_media": "ai_image"` on at most `MAX_AI_IMAGES_PER_SHORT` (2–3) ultra-specific conceptual scenes that have no real footage.
+3. FLASHY CAMERA FX (`effect` per scene):
+   - Choose from: `"impact_shake_zoom"` (use on Scene 1 and major plot twists!), `"whip_flash_zoom"`, `"fast_punch_in"`, `"parallax_pan_right"`, `"high_contrast_zoom_out"`.
+4. CANONICAL WIKIPEDIA ARTICLES & STRICT DOMAIN KEYWORDS:
+   - `wikipedia_articles`: 3 to 5 exact English Wikipedia article titles for the historical event.
+   - `required_visual_keywords`: 8 to 12 lowercase domain nouns so unrelated modern celebrities or sports homonyms are rejected.
+5. PUNCHY CALLOUT BADGES & SUBSCRIBE CTA:
+   - `on_screen_callout`: Short 1-3 word uppercase badge under 18 chars (e.g. `"1932 AUSTRALIA"`, `"20,000 EMUS"`, `"TOP SECRET"`).
+   - End the final scene's narration with a punchy cliffhanger twist or 4-word question that makes viewers comment and subscribe.
 
 Return ONLY valid JSON matching this schema:
 {
-  "title": "Viral US YouTube Short title under 65 chars (include #shorts)",
-  "description": "Engaging description with historical context and hashtags (#history #shorts #ushistory #documentary)",
-  "tags": ["history", "shorts", "ushistory", "documentary"],
-  "is_space_or_science": true,
-  "wikipedia_articles": ["Mariner 1", "Mariner program", "Atlas-Agena", "Jet Propulsion Laboratory"],
-  "required_visual_keywords": ["mariner", "nasa", "atlas", "agena", "rocket", "spacecraft", "probe", "launch", "canaveral", "venus", "jpl", "1962"],
+  "title": "Viral US YouTube Short title under 62 chars (include #shorts)",
+  "description": "Gripping 2-sentence hook + historical context + #shorts #history #ushistory #documentary",
+  "tags": ["history", "shorts", "ushistory", "documentary", "viralhistory"],
+  "is_space_or_science": false,
+  "wikipedia_articles": ["Emu War", "Emu", "Royal Australian Artillery"],
+  "required_visual_keywords": ["emu", "australia", "1932", "military", "artillery", "birds", "wheat", "campion", "lewis gun"],
   "scenes": [
     {
       "scene_id": 1,
-      "narration": "One missing mark doomed America's Venus-bound probe.",
-      "wikimedia_query": "Mariner 1 spacecraft NASA 1962",
-      "nasa_query": "Mariner 1 spacecraft",
-      "wikipedia_article": "Mariner 1",
-      "image_prompt": "Authentic 1962 archival NASA photograph of the Mariner 1 Venus spacecraft probe in cleanroom, dramatic documentary lighting, vertical 9:16, no text",
-      "pexels_query": "vintage rocket launch",
-      "prefer_media": "archival",
-      "effect": "blur_snap_zoom_in",
-      "on_screen_callout": "JULY 1962"
+      "narration": "In 1932, Australia declared war on twenty thousand giant birds—and lost.",
+      "archival_clip_query": "1930s army soldiers truck",
+      "pexels_query": "flock of emus running desert",
+      "wikimedia_query": "Emu War 1932 Australia historical",
+      "nasa_query": "",
+      "wikipedia_article": "Emu War",
+      "image_prompt": "Dramatic 1932 archival war photograph of Australian soldiers facing thousands of giant emus in the Western Australian outback, vertical 9:16, no text",
+      "prefer_media": "video_clip",
+      "effect": "impact_shake_zoom",
+      "on_screen_callout": "NOVEMBER 1932"
     }
   ]
 }
@@ -147,9 +148,11 @@ class FoundryLLMClient:
             {
                 "role": "user",
                 "content": (
-                    f"Create a 60-second History YouTube Short storyboard for a US audience on: '{topic}'. "
-                    "Ensure 16 to 18 fast-paced scenes, each 6 to 8 words of narration (~120 words total so the audio stays under 55 seconds). "
-                    f"Provide canonical `wikipedia_articles` and `required_visual_keywords`. Set `prefer_media` to 'ai_image' on the {max_ai} most conceptual scenes (such as mathematical equations, lost paperwork, or abstract moments) and 'archival' on all other scenes. "
+                    f"Create a high-retention 60-second US History YouTube Short storyboard on: '{topic}'. "
+                    "Ensure 16 to 18 rapid scenes (6 to 8 words per scene, ~120 words total). "
+                    "CRITICAL FOR RETENTION: Set `prefer_media` to `'video_clip'` on Scene 1, Scene 2, Scene 3, and at least 9 to 11 action scenes total, "
+                    "providing vivid `archival_clip_query` and `pexels_query` phrases that match the exact spoken words of each scene! "
+                    f"Use `'archival'` for specific historical portraits/artifacts and `'ai_image'` on at most {max_ai} conceptual scenes. "
                     "Output ONLY valid JSON."
                 ),
             },
@@ -160,7 +163,7 @@ class FoundryLLMClient:
         storyboard = json.loads(raw_json)
         storyboard["topic"] = topic
         print(
-            f"[FoundryLLM] Generated '{storyboard.get('title')}' "
+            f"[FoundryLLM] Generated v5.0 Clip-Synced Storyboard '{storyboard.get('title')}' "
             f"({len(storyboard.get('scenes', []))} scenes, max_ai={max_ai}) via {self.model}."
         )
         return storyboard
@@ -183,8 +186,8 @@ class FoundryLLMClient:
                 {
                     "role": "system",
                     "content": (
-                        "You are a strict archival documentary fact-checker. Given a historical topic and a list of candidate images "
-                        "(with id, title, desc), return a JSON object `{\"approved_ids\": [...]}` containing ONLY the IDs of images "
+                        "You are a strict archival documentary fact-checker. Given a historical topic and a list of candidate images/clips "
+                        "(with id, title, desc), return a JSON object `{\"approved_ids\": [...]}` containing ONLY the IDs of items "
                         "that genuinely depict the historical event, its era, spacecraft, military hardware, historical figures, or locations. "
                         "STRICTLY REJECT any modern celebrities, actors, singers, athletes, baseball players, red carpet photos, "
                         "unrelated modern military portraits, or homonym traps."

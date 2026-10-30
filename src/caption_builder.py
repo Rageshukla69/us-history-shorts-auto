@@ -1,13 +1,14 @@
 r"""
-Builds dynamic word-synced ASS subtitles in the viral "Pro Creator V2" documentary style:
+Builds dynamic word-synced ASS subtitles in the viral "Pro Creator V5 — Multi-Color Power-Word & Subscribe CTA" style:
 - High-impact 90pt Bold Montserrat typography (with automatic step-down to 74pt for extra-long 14+ char lines)
-  positioned in the lower-middle "Thumb-Stop Zone" (`MarginV: 530` on `1080x1920`) well above YouTube Shorts UI overlays.
-- 8px deep-black contour outline + 5px drop shadow + `\blur0.7` edge anti-aliasing so captions pop with razor-sharp
-  contrast over any bright or dark background without needing an intrusive box.
-- Smooth 75ms elastic active-word pop animation (`\fscx100\fscy100\t(0,75,\fscx114\fscy114)`) in Warm Gold (`#FFD700`)
-  while surrounding words stay crisp pure white (`#FFFFFF`) at 100% scale.
-- Subtle 45ms phrase entrance fade (`\fad(45,0)`) on every new 2-to-3 word chunk.
-- Attaches punctuation (`,`, `.`, `;`, `:`, `!`, `?`) directly to the preceding word and truncates top badges at whole-word boundaries.
+  positioned in the lower-middle "Thumb-Stop Zone" (`MarginV: 530` on `1080x1920`).
+- Dynamic 3-Color Active-Word Pop System:
+  1. Danger / Action / Shock Power Words (`WAR`, `DEAD`, `EXPLODED`, `BOMB`, `NUCLEAR`, `SECRET`, `FAKE`, `DOOMED`, `LOST`, `CRAZIEST`, `KILL`, `FIRE`, `CRASHED`, `PLAGUE`)
+     pop in **Neon Crimson Red (`#FF2E2E` -> ASS `&H2E2EFF&`)** at **118% elastic scale**!
+  2. Numbers, Dates, Money & Stats (`$80M`, `1932`, `1944`, `20,000`, `MILLION`, `BILLION`, `100%`, `FIRST`)
+     pop in **Electric Emerald Green (`#00FF7F` -> ASS `&H7FFF00&`)** at **116% elastic scale**!
+  3. Standard Active Words pop in **Warm Viral Gold (`#FFD700` -> ASS `&H00D7FF&`)** at **114% elastic scale**!
+- Animated "SUBSCRIBE FOR DAILY UNTOLD HISTORY" CTA pill in the final 3.0 seconds to convert viewers into subscribers.
 """
 import re
 from pathlib import Path
@@ -16,6 +17,19 @@ from voice_engine import WordTiming
 
 PUNCTUATION_ONLY_RE = re.compile(r"^[,.;:!?—–\-\"'\)\]]+$")
 LEADING_PUNCT_RE = re.compile(r"^([,.;:!?]+)(.+)$")
+
+POWER_DANGER_WORDS = {
+    "WAR", "DEAD", "DIED", "DEATH", "KILLED", "KILL", "EXPLODED", "EXPLOSION", "BOMB", "NUCLEAR",
+    "ATOMIC", "DOOMED", "DESTROYED", "CRASHED", "CRASH", "FAKE", "CORPSE", "SECRET", "SPY", "SPIES",
+    "HITLER", "NAZI", "TERROR", "PANIC", "BLOOD", "FIRE", "BURNED", "POISON", "PLAGUE", "CRAZIEST",
+    "BIZARRE", "IMPOSSIBLE", "LOST", "VANISHED", "MISSING", "FLOOD", "WAVE", "CRUSHED", "TRAPPED",
+    "NEVER", "REFUSED", "STOPPED", "SHOCKING", "INSANE", "DANGEROUS", "LETHAL", "FATAL", "ATTACK",
+}
+
+NUMBER_STAT_WORDS = {
+    "MILLION", "BILLIONS", "BILLION", "THOUSAND", "HUNDRED", "FIRST", "ZERO", "SINGLE", "DOUBLE",
+    "TONS", "MPH", "FEET", "MILES", "HOURS", "MINUTES", "SECONDS", "YEARS", "CENTURY",
+}
 
 
 def _format_ass_time(seconds: float) -> str:
@@ -35,10 +49,24 @@ def _clean_word(word: str) -> str:
     return cleaned
 
 
+def _get_word_pop_tag(word_str: str) -> str:
+    """
+    Returns the ASS override tag for an active word based on whether it is a Power/Danger word
+    (Neon Red 118% pop), a Number/Money/Stat word (Electric Emerald Green 116% pop), or a standard
+    word (Warm Viral Gold 114% pop).
+    """
+    bare = re.sub(r"[^A-Z0-9$%]", "", word_str.upper())
+    if bare in POWER_DANGER_WORDS:
+        # Neon Crimson Red (#FF3333 -> BGR &H3333FF&) + 118% elastic pop
+        return r"{\c&H3333FF&\fscx100\fscy100\t(0,70,\fscx118\fscy118)}"
+    if any(ch.isdigit() or ch in "$%" for ch in bare) or bare in NUMBER_STAT_WORDS:
+        # Electric Emerald Green (#00FF7F -> BGR &H7FFF00&) + 116% elastic pop
+        return r"{\c&H7FFF00&\fscx100\fscy100\t(0,70,\fscx116\fscy116)}"
+    # Standard Warm Viral Gold (#FFD700 -> BGR &H00D7FF&) + 114% elastic pop
+    return r"{\c&H00D7FF&\fscx100\fscy100\t(0,75,\fscx114\fscy114)}"
+
+
 def _truncate_badge_words(text: str, max_chars: int = 22, max_words: int = 4) -> str:
-    """
-    Truncates top callout badge text cleanly on whole-word boundaries so words are never cut in half.
-    """
     words = [w for w in text.split() if w]
     selected: List[str] = []
     total = 0
@@ -52,10 +80,6 @@ def _truncate_badge_words(text: str, max_chars: int = 22, max_words: int = 4) ->
 
 
 def _merge_punctuation_tokens(word_timings: List[WordTiming]) -> List[WordTiming]:
-    """
-    Merges standalone punctuation tokens (emitted by Azure/Edge TTS word boundary events)
-    onto the immediately preceding word so captions never render ugly spaces like `FRANCE ,` or `RUBBER ;`.
-    """
     merged: List[WordTiming] = []
     for wt in word_timings:
         raw = wt.word.strip()
@@ -102,10 +126,6 @@ def _group_into_safe_chunks(
     max_words: int = 3,
     max_chars_two_lines: int = 22,
 ) -> List[List[WordTiming]]:
-    """
-    Groups words within each scene into punchy 2-to-3 word chunks that NEVER overflow
-    the 1080px horizontal safe zone (950px effective width at 90pt Montserrat Bold).
-    """
     chunks: List[List[WordTiming]] = []
     i = 0
     n = len(word_timings)
@@ -143,12 +163,6 @@ def _format_chunk_lines(
     active_idx: int,
     max_single_line_chars: int = 12,
 ) -> str:
-    r"""
-    Formats a chunk of 1-3 words with a smooth 75ms elastic active-word gold pop animation
-    (`\c&H00D7FF&\fscx100\fscy100\t(0,75,\fscx114\fscy114)`) and inserts an explicit ASS `\N`
-    line break when total characters exceed `max_single_line_chars` so text stays centered
-    inside the 1080x1920 vertical frame.
-    """
     plain_words = [_clean_word(wt.word) for wt in chunk]
     total_chars = sum(len(w) for w in plain_words) + max(0, len(plain_words) - 1)
 
@@ -165,14 +179,14 @@ def _format_chunk_lines(
             line_groups = [[plain_words[0], plain_words[1]], [plain_words[2]]]
 
     max_line_chars = max(len(" ".join(lg)) for lg in line_groups)
-    # Automatic dynamic font-size step-down if a line has a very long English word (>13 chars)
     base_fs_tag = "\\fs74" if max_line_chars > 13 else "\\fs90"
 
     styled_words = []
     for j, w_str in enumerate(plain_words):
         if j == active_idx:
+            pop_tag = _get_word_pop_tag(w_str)
             styled_words.append(
-                f"{{\\c&H00D7FF&\\fscx100\\fscy100\\t(0,75,\\fscx114\\fscy114)}}{w_str}{{\\c&HFFFFFF&\\fscx100\\fscy100}}"
+                f"{pop_tag}{w_str}{{\\c&HFFFFFF&\\fscx100\\fscy100}}"
             )
         else:
             styled_words.append(w_str)
@@ -200,7 +214,7 @@ def generate_synced_ass_captions(
     output_ass.parent.mkdir(parents=True, exist_ok=True)
 
     header = """[Script Info]
-Title: US History Short Word-Synced Captions (Pro Creator V2)
+Title: US History Short Word-Synced Captions (Pro Creator V5 Flashy Retention)
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
@@ -211,6 +225,7 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: MainCaption,Montserrat,90,&H00FFFFFF,&H0000D7FF,&H00000000,&H96000000,-1,0,0,0,100,100,1.0,0,1,8,5,2,65,65,530,1
 Style: TopBadge,Montserrat,50,&H0000D7FF,&H00FFFFFF,&H00101010,&HD2080808,-1,0,0,0,100,100,2.0,0,3,16,0,8,70,70,215,1
+Style: SubscribeCTA,Montserrat,44,&H00FFFFFF,&H0000D7FF,&H001414CC,&HE61010B0,-1,0,0,0,100,100,2.0,0,3,16,0,8,70,70,310,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -237,7 +252,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             )
 
     last_badge = ""
+    total_end_sec = 0.0
     for scene in scenes:
+        s_end_val = float(scene.get("end_sec", 0.0))
+        if s_end_val > total_end_sec:
+            total_end_sec = s_end_val
+
         badge = (scene.get("on_screen_callout") or "").strip().upper()
         if not badge:
             continue
@@ -246,13 +266,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             continue
         last_badge = clean_badge
 
-        s_start = float(scene.get("start_sec", 0.0)) + 0.08
-        s_end = min(float(scene.get("end_sec", s_start + 1.5)), s_start + 2.1)
+        s_start = float(scene.get("start_sec", 0.0)) + 0.06
+        s_end = min(s_end_val, s_start + 2.1)
         if s_end > s_start:
             events.append(
-                f"Dialogue: 1,{_format_ass_time(s_start)},{_format_ass_time(s_end)},TopBadge,,0,0,0,,{{\\fad(120,160)}}  {clean_badge}  "
+                f"Dialogue: 1,{_format_ass_time(s_start)},{_format_ass_time(s_end)},TopBadge,,0,0,0,,{{\\fad(90,140)\\fscx90\\fscy90\\t(0,90,\\fscx100\\fscy100)}}  {clean_badge}  "
             )
 
+    # Add an animated Subscribe CTA pill in the final 2.8 seconds to convert viewers into subscribers!
+    if total_end_sec > 6.0:
+        cta_start = max(0.0, total_end_sec - 2.8)
+        events.append(
+            f"Dialogue: 3,{_format_ass_time(cta_start)},{_format_ass_time(total_end_sec)},SubscribeCTA,,0,0,0,,"
+            r"{\fad(120,120)\fscx85\fscy85\t(0,140,\fscx104\fscy104)\t(140,260,\fscx100\fscy100)}  SUBSCRIBE FOR DAILY HISTORY  "
+        )
+
     output_ass.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
-    print(f"[CaptionBuilder] Generated {len(events)} Pro Creator 90pt word-synced subtitle events -> {output_ass}")
+    print(f"[CaptionBuilder] Generated {len(events)} Pro Creator V5 multi-color word-synced subtitle events -> {output_ass}")
     return output_ass
