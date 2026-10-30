@@ -1,65 +1,55 @@
-# US History Shorts Automation — Cost-First Documentary Edition
+# US History Shorts Automation — Documentary Edition
 
-Tailored to work directly with your **existing Heroku Config Vars** (`AZURE_SPEECH_KEY`, `FOUNDRY_TEXT_ENDPOINT`, `FOUNDRY_ENDPOINT`, `MAI-Image-2.6-Flash`, `gpt-6-luna`, `YOUTUBE_TOKEN_JSON`) with **zero new accounts or API keys required**.
+This repository builds vertical history Shorts using a cost-first media pipeline. It is designed to prefer real, attributable historical media and to fail closed rather than publish unrelated or empty visuals.
 
-## What Was Upgraded in v3.0
-1. **100% Boundary-Safe Word-Synced Captions (`src/caption_builder.py`)**
-   - Switched ASS subtitle engine from `WrapStyle: 2` (which disabled wrapping and clipped words at the left/right edges) to `WrapStyle: 0` with `90px` horizontal safe margins, character-aware 1-to-2 line chunking, and `62pt` Montserrat typography.
-   - Merged standalone punctuation tokens (`,`, `.`, `;`, `:`) directly onto the preceding word so floating spaces like `FRANCE ,` or `RUBBER ;` never appear.
-   - Deduplicated consecutive identical top callout badges so badges don't blink repeatedly.
-2. **MAI-Image Credit Conservation Guardrail (`src/media_fetcher.py` & `MAX_AI_IMAGES_PER_SHORT`)**
-   - Added a strict `MAX_AI_IMAGES_PER_SHORT` cap (default `2`, configurable down to `1` or `0` in GitHub Secrets) so `MAI-Image-2.6-Flash` is only called at most 1–2 times per Short, slashing your Foundry image credit usage by **80%–90%**.
-   - Pre-warms a verified historical image pool from the topic's main Wikipedia articles and Wikimedia Commons categories and uses zero-credit documentary detail crops when needed.
-3. **Zero Random Celebrities or Tourist Signs (`src/media_fetcher.py` & `src/foundry_llm.py`)**
-   - Strips generic metaphor/material words (`rubber`, `looks real`, `illusion`, `actors`, `secret`) and anchors every Wikimedia/Wikipedia lookup to the core historical subject and era.
-   - Added a strict regex blacklist against modern celebrities (`Prince Harry`, `Invictus Games`, `red carpet`, `press conference`) and modern tourist plaques (`memorial plaque`, `information board`, `wayside marker`), plus URL/MD5 deduplication across all scenes.
-4. **Dark Mysterious Documentary Score & Zero "Zoop/Whoosh" SFX (`src/sfx_generator.py` & `src/video_composer.py`)**
-   - Completely removed `whoosh`, `pop`, `boom`, and `shutter` transition sound effects from every cut.
-   - Synthesizes a 68-second stereo dark mysterious D-minor documentary score (`assets/sfx/mystery_bgm.wav`) featuring deep sub-bass pulses, haunting cello/synth tension chords, eerie high harmonic shimmer, and a 60 BPM suspense heartbeat.
-   - Uses FFmpeg `sidechaincompress` to automatically duck the mysterious background music underneath the narrator's voiceover and swell gently during pauses.
-   - Frames landscape/square archival photographs over a frosted dark 9:16 canvas with top/bottom readability vignettes so subjects are never awkwardly chopped off.
+## Core behaviour
+- Paid image generation defaults to **0** (`MAX_AI_IMAGES_PER_SHORT=0`). It is only used when explicitly enabled and the storyboard marks a scene as requiring a reconstruction.
+- Scene-level relevance matching is applied before using archival photos or videos. Topic-level approval alone is not enough.
+- When no source asset is found, the renderer uses a clearly labelled editorial graphic, never a fake archival photo.
+- If more than 30% of scenes have no suitable source media, the pre-upload quality gate blocks publication.
+- The technical QC checks portrait dimensions, audio presence, duration, file size and sustained black frames. Human review is still required.
+- Source/credit details are written into `output/metadata.json` and YouTube description where available.
+- Workflow caches `.cache/media` to reduce repeated media downloads.
 
-## Your Exact Secret Mapping (From Your Heroku App)
-| Secret Name | What Value to Paste |
-| :--- | :--- |
-| `AZURE_SPEECH_KEY` | Copy directly from your Heroku `AZURE_SPEECH_KEY` |
-| `AZURE_SPEECH_REGION` | `centralindia` (already pre-filled in workflow) |
-| `AZURE_TTS_VOICE` | Pre-set to `en-US-BrianMultilingualNeural` (automatically replaces `hi-IN-MadhurNeural`) |
-| `BG_MUSIC_VOLUME` | `0.28` (dark mysterious documentary score volume before voiceover auto-ducking) |
-| `FOUNDRY_API_KEY` | Copy directly from your Heroku `FOUNDRY_API_KEY` |
-| `FOUNDRY_ENDPOINT` | Copy directly from your Heroku `FOUNDRY_ENDPOINT` (`https://draftbot.services...`) |
-| `FOUNDRY_IMAGE_MODEL` | `MAI-Image-2.6-Flash` (already pre-filled) |
-| `MAX_AI_IMAGES_PER_SHORT` | `2` (caps MAI-Image calls per video to save your credits; set to `1` or `0` to spend even less) |
-| `FOUNDRY_TEXT_API_KEY` | Copy directly from your Heroku `FOUNDRY_TEXT_API_KEY` |
-| `FOUNDRY_TEXT_ENDPOINT` | Copy directly from your Heroku `FOUNDRY_TEXT_ENDPOINT` (`https://vakilbot.services...`) |
-| `FOUNDRY_TEXT_MODEL` | `gpt-6-luna` (already pre-filled) |
-| `SHORTS_PER_DAY` | `2` (runs every 12 hours) |
-| `VOICE_SPEED_PERCENT` | `3` (+3% crisp documentary pace) |
-| `YOUTUBE_TOKEN_JSON` | Copy the full `{"token": "ya29...", ...}` JSON string from your Heroku `YOUTUBE_TOKEN_JSON` |
+## Required GitHub Secrets
+Keep your existing secrets; do not paste secret values into source files.
+
+| Secret | Purpose |
+|---|---|
+| `FOUNDRY_TEXT_ENDPOINT`, `FOUNDRY_TEXT_API_KEY` | Storyboard generation |
+| `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION` | Azure voiceover (Edge TTS fallback) |
+| `YOUTUBE_TOKEN_JSON` | YouTube upload |
+| `FOUNDRY_ENDPOINT`, `FOUNDRY_API_KEY` | Optional image generation |
+| `PEXELS_API_KEY` | Optional stock-video search (disabled unless `ALLOW_PEXELS_STOCK=true`) |
+
+Optional variables: `MAX_AI_IMAGES_PER_SHORT=0`, `YOUTUBE_PRIVACY_STATUS=unlisted`, `BG_MUSIC_VOLUME=0.18`, `VOICE_SPEED_PERCENT=2`. Pexels stock clips are opt-in via `ALLOW_PEXELS_STOCK=true`; they are not labelled archival footage.
+
+## Safe first run
+1. Run the GitHub Actions workflow manually with `dry_run=true` and `max_ai_images=0`.
+2. Download `rendered-short-*` and inspect it from beginning to end.
+3. Inspect `output/metadata.json`, `output/quality_report.json`, and the Actions summary.
+4. Only after manual review, run with `dry_run=false`. Scheduled runs default to preview-only. To enable scheduled uploads, add repository secret `DRY_RUN=false`; remove that secret or set it to `true` to pause scheduled publishing.
+
+## Important limitations
+Free archives do not guarantee that every obscure scene has usable motion footage. The system must not pretend otherwise. A history short may use a mix of authentic moving footage, period photographs, maps and clearly labelled editorial graphics. A human editor must verify historical accuracy, licensing and final visual quality before public release.
+
+## Project layout
+- `src/foundry_llm.py`: story/script generation and candidate verification
+- `src/media_fetcher.py`: scene-aware asset selection, image/video validation and fallbacks
+- `src/video_composer.py`: 1080x1920 rendering, camera motion and audio mix
+- `src/caption_builder.py`: word-synchronised captions
+- `src/quality_control.py`: fail-closed pre-upload technical gate
+- `.github/workflows/shorts_12h_pipeline.yml`: scheduled/manual workflow
 
 
-## Cost-first visual policy (updated)
+## v8 multi-archive media engine
 
-- Paid image generation is **OFF by default** (`MAX_AI_IMAGES_PER_SHORT=0`). No image-generation API call is made unless you explicitly raise this setting.
-- Set the budget to `1` only when a scene is genuinely impossible to illustrate with relevant archival media or footage. A practical upper limit is `2` for a 10–12 scene Short.
-- The pipeline prefers relevant archival photographs and verified moving footage. When it cannot find a trustworthy match, it creates a locally rendered, scene-specific editorial card rather than silently reusing an unrelated image.
-- `MAX_AI_IMAGES_PER_SHORT` accepts `0` (not just positive values).
-- Keep `DRY_RUN=true` until you have inspected the rendered MP4 and its `output/metadata.json` visual audit.
+The scene-level media resolver searches official/public endpoints from Internet Archive, Wikimedia Commons, the Library of Congress, NASA Image and Video Library, and Openverse. It ranks results against each scene's concrete visual subject and keywords. A source is only auto-eligible when the returned item carries an explicit permissive rights basis (Public Domain, CC0, CC BY, or CC BY-SA). Non-commercial, no-derivatives, fair-use, and unknown-rights records are excluded from automatic use. This is a conservative automation filter, not legal advice; verify individual rights before monetized publication.
 
-## Visual accuracy and publishing checklist
+Media priority: rights-cleared moving footage -> rights-cleared historical still -> budgeted AI reconstruction -> clearly labelled original editorial graphic. AI image generation is a hard per-video cap and accepts zero. It never fabricates an archival source.
 
-1. Check the visual audit in the GitHub Actions summary. A "free" asset is not automatically a relevant asset.
-2. Check the original item page and license/rights statement for every archival asset before monetized publication. Source availability does not guarantee commercial reuse rights.
-3. Prefer primary sources (National Archives, Library of Congress, NASA, official museum/archive collections) for historical visuals and factual claims.
-4. Do not present AI reconstructions, editorial cards, or illustrative stock footage as authentic historical photographs or footage. Add an on-screen or description disclosure where needed.
-5. Review every generated script for disputed claims, unsupported numbers, quotations, and causal claims before switching the upload privacy to `public`.
+`MIN_AUTHENTIC_MEDIA_RATIO` defaults to `0.30`. Preview renders can still be produced below this ratio, but an actual upload is blocked until enough scenes use authentic, rights-cleared source media. Set `DRY_RUN=true` for safe testing.
 
-## Recommended operating settings
+Optional: set `NARA_API_KEY` (request one from NARA) to enable the official US National Archives Catalog adapter. The NARA API has usage terms and rate limits; its records can contain rare third-party restrictions, so the adapter rejects records with restriction indicators and preserves the item record URL. The software must not imply NARA endorsement.
 
-```dotenv
-MAX_AI_IMAGES_PER_SHORT=0
-DRY_RUN=true
-YOUTUBE_PRIVACY_STATUS=private
-```
-
-After several reviewed dry runs, you can switch to `unlisted` and then `public`. Avoid automatic public publishing until your sources, visual matches, captions, audio mix, and factual accuracy have been consistently checked.
+Run `python scripts/diagnose_media_sources.py` to inspect which archives return rights-eligible results for representative subjects. It performs searches only and does not download or publish assets.

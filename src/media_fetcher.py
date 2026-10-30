@@ -31,6 +31,11 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 import requests
 
+try:
+    from archive_media import ArchiveMediaFinder, rank_candidates
+except ImportError:
+    from src.archive_media import ArchiveMediaFinder, rank_candidates
+
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 WIKIPEDIA_REST_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
@@ -46,25 +51,10 @@ USER_AGENT = (
 )
 
 ABSOLUTE_REJECT_PATTERNS = re.compile(
-    r"(baseball|football|basketball|soccer|hockey|cricket|tennis|golf|rugby|nfl|nba|mlb|nhl|fifa|"
-    r"pitcher|quarterback|touchdown|stadium|ballpark|outfielder|infielder|linebacker|shortstop|"
-    r"grammy|oscar|emmy|red[ _-]?carpet|premiere|concert|tour|singer|rapper|pop[ _-]?star|"
-    r"actress|actor|celebrity|paparazzi|billboard|fashion|runway|supermodel|influencer|youtuber|"
-    r"tiktok|cosplay|anime|manga|hentai|cartoon|comic|caricature|meme|parody|satire|lego|sonic|"
-    r"minifigure|action[ _-]?figure|toy|videogame|gameplay|minecraft|fortnite|roblox|gta|"
-    r"bigfoot|sasquatch|sassy|periscopefilm|konashenkov|russian[ _-]?ministry|putin|zelensky|"
-    r"obama|biden|trump|clinton|bush|reagan[ _-]and[ _-]gorbachev|george[ _-]washington[ _-]painting|"
-    r"voa|voice[ _-]of[ _-]america|c-span|cspan|senator|congressman|congresswoman|representative|"
-    r"parliament|committee|hearing|testimony|speech|address|remarks|press[ _-]?conference|briefing|"
-    r"summit|interview|panel|discussion|conversation|zoom|skype|webcam|podcast|talk[ _-]?show|"
-    r"lecture|presentation|webinar|powerpoint|slides|parade|festival|solstice|protest|rally|"
-    r"demonstration|march|marathon|vlog|selfie|subtitle|captioned|alford|quesnell|"
-    r"bedsheet|plaid|kitten|cute[ _-]?cat|my[ _-]?cat|house[ _-]?cat|cat[ _-]?playing|cat[ _-]?licking|"
-    r"pet[ _-]?cat|litter[ _-]?box|scratching[ _-]?post|alma[ _-]?radio|atacama|radio[ _-]?telescope|"
-    r"logo|icon|symbol|flag[ _-]of|coat[ _-]of[ _-]arms|seal[ _-]of|emblem|badge|insignia|crest|heraldry|"
-    r"blank|placeholder|stub|template|diagram|chart|graph|plot|histogram|spreadsheet|"
-    r"memorandum|declassified[ _-]?memo|typewritten|document[ _-]?page|page[ _-]\d+|letter[ _-]from|"
-    r"signature|autograph|barcode|qr[ _-]?code|watermark|stock[ _-]?photo|shutterstock|getty)",
+    r"(shutterstock|getty[ _-]?images?|alamy[ _-]?stock|stock[ _-]?photo|watermark|"
+    r"minecraft|fortnite|roblox|videogame|gameplay|anime|manga|hentai|cartoon|meme|parody|"
+    r"lego|minifigure|action[ _-]?figure|toy[ _-]?review|cosplay|tiktok[ _-]?trend|"
+    r"commons[ _-]?logo|wikimedia[ _-]?logo|qr[ _-]?code|barcode)",
     re.IGNORECASE,
 )
 
@@ -145,9 +135,11 @@ class MediaFetcher:
         self.ai_generated_images: List[Path] = []
         self.downloaded_scene_images: List[Path] = []
         self.scene_audit_log: List[Dict[str, Any]] = []
+        self.archive_finder = ArchiveMediaFinder(session=self.session, cache_dir=self.media_cache_dir)
 
-        self._build_verified_video_pool()
-        self._build_verified_archival_pool()
+        # Do not run topic-wide LLM approval pools at startup. They were too restrictive,
+        # could discard every valid item, and consumed model calls before scene-level search.
+        print("[MediaFetcher] Multi-archive scene-level discovery enabled: Internet Archive, Wikimedia, LOC, NASA, Openverse.")
 
     def _matches_domain_keywords(self, text: str) -> bool:
         if not self.domain_keywords:
@@ -161,10 +153,10 @@ class MediaFetcher:
         gray = np.asarray(small.convert("L"), dtype=np.float32)
         mean_l = float(gray.mean())
         std_l = float(gray.std())
-        if mean_l < 16.0 or std_l < 14.0:
+        if mean_l < 10.0 or std_l < 7.0:
             return False
         white_ratio = float(np.mean(gray > 235.0))
-        if white_ratio > 0.32:
+        if white_ratio > 0.78:
             return False
         return True
 
@@ -432,7 +424,7 @@ class MediaFetcher:
                 dark_ratio = float(np.mean(arr < 22.0))
                 midtone_ratio = float(np.mean((arr >= 28.0) & (arr <= 228.0)))
 
-                if mean_luma < 32.0 or std_luma < 20.0 or dark_ratio > 0.58 or midtone_ratio < 0.36:
+                if mean_luma < 18.0 or std_luma < 8.0 or dark_ratio > 0.86 or midtone_ratio < 0.12:
                     return False
                 sampled_arrays.append(arr)
             except Exception:
@@ -446,7 +438,7 @@ class MediaFetcher:
             float(np.abs(sampled_arrays[i] - sampled_arrays[i - 1]).mean())
             for i in range(1, len(sampled_arrays))
         ]
-        if float(np.mean(diffs)) < 1.2:
+        if float(np.mean(diffs)) < 0.30:
             return False
         return True
 
@@ -454,14 +446,15 @@ class MediaFetcher:
         url = cand.get("url", "")
         if not url or url in self.used_urls:
             return None
+        cache_allowed = cand.get("source") != "US National Archives"
         cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
         cached_video = self.media_cache_dir / f"{cache_key}.mp4"
-        if cached_video.exists() and cached_video.stat().st_size > 4000:
+        if cache_allowed and cached_video.exists() and cached_video.stat().st_size > 4000:
             import shutil
             shutil.copy2(cached_video, dest_path)
             if self._validate_video_clip_frames(dest_path):
                 self.used_urls.add(url)
-                self.attributions.append(f"• Video: {cand.get('title', 'Archival Video')} ({cand.get('license', 'Source licence to verify')})")
+                self.attributions.append(f"• Video: {cand.get('title', 'Archival Video')} ({cand.get('license', 'Rights statement')}) — {cand.get('source_url', url)}")
                 return dest_path
             dest_path.unlink(missing_ok=True)
         dur = float(cand.get("duration", 12.0) or 12.0)
@@ -500,11 +493,14 @@ class MediaFetcher:
                 proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=32)
                 if proc.returncode == 0 and self._validate_video_clip_frames(dest_path):
                     import shutil
-                    shutil.copy2(dest_path, cached_video)
+                    if cache_allowed:
+                        shutil.copy2(dest_path, cached_video)
                     self.used_urls.add(url)
                     title = cand.get("title", "Archival Video")
                     lic = cand.get("license", "Public Domain / CC")
-                    self.attributions.append(f"• Video: {title[:65]} ({lic}) — {url}")
+                    self.attributions.append(f"• Video: {title[:65]} ({lic}) — {cand.get('source_url', url)}")
+                    if cand.get("source") == "US National Archives":
+                        self.attributions.append("This product uses the National Archives Catalog API but is not endorsed or certified by NARA.")
                     return dest_path
                 dest_path.unlink(missing_ok=True)
             except Exception:
@@ -512,86 +508,16 @@ class MediaFetcher:
         return None
 
     def _pull_best_verified_video_clip(self, scene: dict, dest_path: Path) -> Optional[Tuple[Path, str]]:
-        pexels_q = scene.get("pexels_query", "").strip()
-        video_q = scene.get("video_query", "").strip()
-        narration = scene.get("narration", "").strip()
-
-        if self.pexels_key and os.getenv("ALLOW_PEXELS_STOCK", "false").strip().lower() == "true" and (pexels_q or video_q):
-            headers = {"Authorization": self.pexels_key}
-            params = {"query": pexels_q or video_q, "per_page": 5, "size": "medium"}
-            try:
-                resp = self.session.get(PEXELS_VIDEO_API, headers=headers, params=params, timeout=18)
-                if resp.status_code == 200:
-                    for v in resp.json().get("videos", []):
-                        vid_id = f"pexels_{v.get('id')}"
-                        if vid_id in self.used_urls:
-                            continue
-                        if float(v.get("duration", 0)) < 3.5:
-                            continue
-                        files = v.get("video_files", [])
-                        mp4s = [f for f in files if f.get("file_type") == "video/mp4" and 540 <= f.get("height", 0) <= 1920]
-                        if not mp4s:
-                            continue
-                        chosen = sorted(mp4s, key=lambda x: abs(x.get("height", 0) - 1080))[0]
-                        link = chosen.get("link", "")
-                        if not link:
-                            continue
-                        vid_r = self.session.get(link, timeout=28)
-                        vid_r.raise_for_status()
-                        dest_path.write_bytes(vid_r.content)
-                        if self._validate_video_clip_frames(dest_path):
-                            self.used_urls.add(vid_id)
-                            owner = (v.get("user") or {}).get("name", "Pexels contributor")
-                            owner_url = (v.get("user") or {}).get("url", "https://www.pexels.com/license/")
-                            self.attributions.append(f"• Pexels video by {owner} — {owner_url}")
-                            return dest_path, f"Pexels HD ({pexels_q or video_q})"
-                        dest_path.unlink(missing_ok=True)
-            except Exception:
-                dest_path.unlink(missing_ok=True)
-
-        # Direct scene-level archive search is a fallback when the one-time topic verifier
-        # returns no candidates. These candidates still must pass strict lexical matching
-        # and the decoded-frame/motion validation gate before they can be used.
-        scene_candidates: List[Dict[str, Any]] = []
-        if video_q:
-            for search_fn in (self._search_prelinger_and_nara_videos, self._search_wikimedia_video_candidates):
-                try:
-                    scene_candidates.extend(search_fn(video_q, limit=4))
-                except Exception as exc:
-                    print(f"[MediaFetcher] Scene video search notice: {exc}")
-            if self.is_space_or_science:
-                try:
-                    scene_candidates.extend(self._search_nasa_video_candidates(video_q, limit=3))
-                except Exception:
-                    pass
-        unique_scene = {}
-        for candidate in scene_candidates:
-            if candidate.get("url") and candidate.get("url") not in self.used_urls:
-                unique_scene[candidate["url"]] = candidate
-        if unique_scene:
-            ranked_scene = sorted(unique_scene.values(), key=lambda c: self._relevance_score(c, self._scene_terms(scene)), reverse=True)
-            for candidate in ranked_scene:
-                if self._relevance_score(candidate, self._scene_terms(scene)) < 3:
-                    continue
-                saved = self._download_and_validate_video_clip(candidate, dest_path)
-                if saved:
-                    return saved, candidate.get("title", "Scene-matched archival video")
-
-        unused_vids = [c for c in self.verified_video_pool if c.get("url") not in self.used_urls]
-        if unused_vids:
-            context_words = self._scene_terms(scene)
-
-            def score_vid(c: Dict[str, Any]) -> int:
-                return self._relevance_score(c, context_words)
-
-            for cand in sorted(unused_vids, key=score_vid, reverse=True):
-                # A topic-level approval is not enough: require scene-level semantic overlap.
-                if score_vid(cand) < 3:
-                    continue
-                saved = self._download_and_validate_video_clip(cand, dest_path)
-                if saved:
-                    return saved, cand.get("title", "Verified Archival Video")
-
+        """Compatibility helper for callers that need one verified archive clip."""
+        query = str(scene.get("video_query") or scene.get("visual_subject") or self.topic).strip()
+        candidates = rank_candidates(self.archive_finder.search(query, "video", limit=10), scene)
+        for candidate in candidates:
+            if candidate.get("relevance_score", 0) < 3:
+                continue
+            saved = self._download_and_validate_video_clip(candidate, dest_path)
+            if saved:
+                self.video_clips_used += 1
+                return saved, f"{candidate.get('source')}: {candidate.get('title')}"
         return None
 
     # =========================================================================
@@ -737,82 +663,77 @@ class MediaFetcher:
         return sum(3 if term in str(candidate.get("title", "")).lower() else 1 for term in terms if term in text)
 
     def fetch_scene_asset(self, scene: dict, assets_dir: Path) -> Tuple[Path, str]:
-        """Select only scene-relevant media. Never silently recycle an unrelated image."""
+        """Scene-first retrieval: authentic motion, authentic still, budgeted AI, designed graphic."""
         assets_dir.mkdir(parents=True, exist_ok=True)
         scene_id = int(scene.get("scene_id", 1))
         narration = str(scene.get("narration", "")).strip()
-        terms = self._scene_terms(scene)
         prefer = str(scene.get("prefer_media", "archival"))
         can_use_ai = self.ai_images_used < self.max_ai_images and bool(self.foundry_endpoint and self.foundry_key)
-
-        # AI is a last-resort opt-in, never forced on the hook.
-        if prefer == "ai_image" and can_use_ai:
-            ai_img = self._generate_foundry_image(str(scene.get("image_prompt") or scene.get("visual_subject") or narration), assets_dir / f"scene_{scene_id:02d}_ai.jpg")
-            if ai_img:
-                self.ai_images_used += 1
-                self.ai_generated_images.append(ai_img)
-                self.downloaded_scene_images.append(ai_img)
-                self.scene_audit_log.append({"scene_id": scene_id, "kind": f"AI IMAGE ({self.ai_images_used}/{self.max_ai_images})", "source": ai_img.name, "narration": narration})
-                return ai_img, "image"
-
-        # Prefer real moving footage when the scene describes a physical action.
-        if prefer == "video_clip" or scene.get("video_query"):
-            clip_res = self._pull_best_verified_video_clip(scene, assets_dir / f"scene_{scene_id:02d}_clip.mp4")
-            if clip_res:
-                clip_path, clip_title = clip_res
-                self.video_clips_used += 1
-                self.scene_audit_log.append({"scene_id": scene_id, "kind": "REAL VIDEO", "source": clip_title[:90], "narration": narration})
-                return clip_path, "video"
-
-        # Try already-approved topic pool, but require a real scene-level match.
-        pool_res = self._pull_best_from_verified_pool(" ".join(sorted(terms)), assets_dir / f"scene_{scene_id:02d}_archival.jpg", min_score=3)
-        if pool_res:
-            pool_img, photo_title = pool_res
-            self.archival_photos_used += 1
-            self.downloaded_scene_images.append(pool_img)
-            self.scene_audit_log.append({"scene_id": scene_id, "kind": "ARCHIVAL PHOTO", "source": photo_title[:90], "narration": narration})
-            return pool_img, "image"
-
-        # Scene-specific Commons search: the old global pool frequently left scenes with no suitable image.
+        subject = str(scene.get("visual_subject") or "").strip()
         queries = []
-        for q in (scene.get("wikimedia_query"), scene.get("visual_subject"), scene.get("video_query")):
-            q = str(q or "").strip()
-            if q and q not in queries:
-                queries.append(q)
-        candidates = []
-        seen = set()
+        for value in (scene.get("video_query"), scene.get("wikimedia_query"), subject,
+                      " ".join(map(str, scene.get("visual_keywords") or []))):
+            value = str(value or "").strip()
+            if value and value.lower() not in {x.lower() for x in queries}:
+                queries.append(value)
+        if not queries:
+            queries = [" ".join(sorted(self._scene_terms(scene))[:6]) or self.topic]
+
+        # 1) Genuine moving footage. Search more than one archive and rank at scene level.
+        video_candidates = []
+        if prefer == "video_clip" or scene.get("video_query"):
+            for query in queries[:2]:
+                video_candidates.extend(self.archive_finder.search(query, "video", limit=8))
+            video_candidates = rank_candidates(video_candidates, scene)
+            for candidate in video_candidates:
+                if candidate.get("relevance_score", 0) < 4 or candidate.get("url") in self.used_urls:
+                    continue
+                clip_path = assets_dir / f"scene_{scene_id:02d}_archive.mp4"
+                saved = self._download_and_validate_video_clip(candidate, clip_path)
+                if saved:
+                    self.video_clips_used += 1
+                    title = candidate.get("title", "Archival video")
+                    self.scene_audit_log.append({"scene_id": scene_id, "kind": "AUTHENTIC VIDEO", "source": f"{candidate.get('source')}: {title[:70]}", "narration": narration, "source_url": candidate.get("source_url"), "license": candidate.get("license"), "license_url": candidate.get("license_url"), "creator": candidate.get("creator"), "relevance_score": candidate.get("relevance_score")})
+                    return saved, "video"
+
+        # 2) Historical photographs / artefacts from multiple collections.
+        image_candidates = []
         for query in queries[:2]:
-            for cand in self._search_wikimedia_candidates(query, limit=5):
-                if cand.get("url") not in seen:
-                    seen.add(cand.get("url"))
-                    cand["id"] = f"scene_{scene_id}_{len(candidates)}"
-                    candidates.append(cand)
-        candidates.sort(key=lambda c: self._relevance_score(c, terms), reverse=True)
-        for cand in candidates:
-            if self._relevance_score(cand, terms) < 3:
+            image_candidates.extend(self.archive_finder.search(query, "image", limit=10))
+        image_candidates = rank_candidates(image_candidates, scene)
+        image_dest = assets_dir / f"scene_{scene_id:02d}_archive.jpg"
+        for candidate in image_candidates:
+            if candidate.get("relevance_score", 0) < 4 or candidate.get("url") in self.used_urls:
                 continue
-            saved = self._download_and_register_image(cand.get("url", ""), assets_dir / f"scene_{scene_id:02d}_commons.jpg", cand.get("title", ""), cand.get("license", "CC"))
+            saved = self._download_and_register_image(candidate.get("url", ""), image_dest,
+                candidate.get("title", "Archival image"), candidate.get("license", "Rights verified"),
+                cache_allowed=candidate.get("source") != "US National Archives")
             if saved:
                 self.archival_photos_used += 1
                 self.downloaded_scene_images.append(saved)
-                self.scene_audit_log.append({"scene_id": scene_id, "kind": "SCENE-MATCHED ARCHIVAL PHOTO", "source": cand.get("title", "Wikimedia Commons")[:90], "narration": narration})
+                source = candidate.get("source", "Archive")
+                self.attributions.append(f"• {candidate.get('title','Historical media')} — {source}; {candidate.get('license','')}; {candidate.get('source_url','')}")
+                if source == "US National Archives":
+                    self.attributions.append("This product uses the National Archives Catalog API but is not endorsed or certified by NARA.")
+                self.scene_audit_log.append({"scene_id": scene_id, "kind": "ARCHIVAL IMAGE", "source": f"{source}: {candidate.get('title','')[:70]}", "narration": narration, "source_url": candidate.get("source_url"), "license": candidate.get("license"), "license_url": candidate.get("license_url"), "creator": candidate.get("creator"), "relevance_score": candidate.get("relevance_score")})
                 return saved, "image"
 
-        # Last-resort AI image only when explicitly budgeted and credentials exist.
+        # 3) Paid AI is a gap-filler only. A hard zero cap is respected exactly.
         if can_use_ai:
-            ai_img = self._generate_foundry_image(str(scene.get("image_prompt") or scene.get("visual_subject") or narration), assets_dir / f"scene_{scene_id:02d}_ai.jpg")
+            prompt = str(scene.get("image_prompt") or subject or narration)
+            ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.ai_generated_images.append(ai_img)
                 self.downloaded_scene_images.append(ai_img)
-                self.scene_audit_log.append({"scene_id": scene_id, "kind": f"AI IMAGE ({self.ai_images_used}/{self.max_ai_images})", "source": ai_img.name, "narration": narration})
+                self.scene_audit_log.append({"scene_id": scene_id, "kind": f"AI RECONSTRUCTION ({self.ai_images_used}/{self.max_ai_images})", "source": ai_img.name, "narration": narration, "source_url": "AI-generated; not archival"})
                 return ai_img, "image"
 
-        # Honest, designed editorial graphic rather than a blank/noisy black placeholder.
+        # 4) A clearly labelled editorial graphic is preferable to unrelated footage.
         fallback_path = assets_dir / f"scene_{scene_id:02d}_editorial.jpg"
         self._create_archival_fallback_card(fallback_path, scene=scene, topic=self.topic)
         self.reframed_cuts_used += 1
-        self.scene_audit_log.append({"scene_id": scene_id, "kind": "EDITORIAL GRAPHIC (NO SOURCE MEDIA FOUND)", "source": "Locally rendered editorial card", "narration": narration})
+        self.scene_audit_log.append({"scene_id": scene_id, "kind": "EDITORIAL GRAPHIC (NO RIGHTS-CLEARED SOURCE FOUND)", "source": "Locally rendered editorial graphic", "narration": narration, "source_url": "", "license": "Original generated graphic"})
         return fallback_path, "image"
 
     def _pull_best_from_verified_pool(self, scene_context: str, dest_path: Path, min_score: int = 3) -> Optional[Tuple[Path, str]]:
@@ -839,7 +760,7 @@ class MediaFetcher:
         return None
 
     def _download_and_register_image(
-        self, img_url: str, dest_path: Path, title: str = "", license_name: str = "Public Domain / CC"
+        self, img_url: str, dest_path: Path, title: str = "", license_name: str = "Public Domain / CC", cache_allowed: bool = True
     ) -> Optional[Path]:
         if img_url in self.used_urls:
             return None
@@ -848,7 +769,7 @@ class MediaFetcher:
         try:
             cache_key = hashlib.sha256(img_url.encode("utf-8")).hexdigest()
             cached_image = self.media_cache_dir / f"{cache_key}.jpg"
-            if cached_image.exists() and cached_image.stat().st_size > 8000:
+            if cache_allowed and cached_image.exists() and cached_image.stat().st_size > 8000:
                 import shutil
                 shutil.copy2(cached_image, dest_path)
                 content_bytes = dest_path.read_bytes()
@@ -871,7 +792,7 @@ class MediaFetcher:
                     dest_path.unlink(missing_ok=True)
                     return None
                 rgb.save(dest_path, quality=94)
-                if not cached_image.exists():
+                if cache_allowed and not cached_image.exists():
                     import shutil
                     shutil.copy2(dest_path, cached_image)
 
