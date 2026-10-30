@@ -1,4 +1,4 @@
-# Autonomous US History YouTube Shorts Engine (v3.0 — Documentary Edition)
+# US History Shorts Automation — Cost-First Documentary Edition
 
 Tailored to work directly with your **existing Heroku Config Vars** (`AZURE_SPEECH_KEY`, `FOUNDRY_TEXT_ENDPOINT`, `FOUNDRY_ENDPOINT`, `MAI-Image-2.6-Flash`, `gpt-6-luna`, `YOUTUBE_TOKEN_JSON`) with **zero new accounts or API keys required**.
 
@@ -36,3 +36,30 @@ Tailored to work directly with your **existing Heroku Config Vars** (`AZURE_SPEE
 | `SHORTS_PER_DAY` | `2` (runs every 12 hours) |
 | `VOICE_SPEED_PERCENT` | `3` (+3% crisp documentary pace) |
 | `YOUTUBE_TOKEN_JSON` | Copy the full `{"token": "ya29...", ...}` JSON string from your Heroku `YOUTUBE_TOKEN_JSON` |
+
+
+## Cost-first visual policy (updated)
+
+- Paid image generation is **OFF by default** (`MAX_AI_IMAGES_PER_SHORT=0`). No image-generation API call is made unless you explicitly raise this setting.
+- Set the budget to `1` only when a scene is genuinely impossible to illustrate with relevant archival media or footage. A practical upper limit is `2` for a 10–12 scene Short.
+- The pipeline prefers relevant archival photographs and verified moving footage. When it cannot find a trustworthy match, it creates a locally rendered, scene-specific editorial card rather than silently reusing an unrelated image.
+- `MAX_AI_IMAGES_PER_SHORT` accepts `0` (not just positive values).
+- Keep `DRY_RUN=true` until you have inspected the rendered MP4 and its `output/metadata.json` visual audit.
+
+## Visual accuracy and publishing checklist
+
+1. Check the visual audit in the GitHub Actions summary. A "free" asset is not automatically a relevant asset.
+2. Check the original item page and license/rights statement for every archival asset before monetized publication. Source availability does not guarantee commercial reuse rights.
+3. Prefer primary sources (National Archives, Library of Congress, NASA, official museum/archive collections) for historical visuals and factual claims.
+4. Do not present AI reconstructions, editorial cards, or illustrative stock footage as authentic historical photographs or footage. Add an on-screen or description disclosure where needed.
+5. Review every generated script for disputed claims, unsupported numbers, quotations, and causal claims before switching the upload privacy to `public`.
+
+## Recommended operating settings
+
+```dotenv
+MAX_AI_IMAGES_PER_SHORT=0
+DRY_RUN=true
+YOUTUBE_PRIVACY_STATUS=private
+```
+
+After several reviewed dry runs, you can switch to `unlisted` and then `public`. Avoid automatic public publishing until your sources, visual matches, captions, audio mix, and factual accuracy have been consistently checked.
