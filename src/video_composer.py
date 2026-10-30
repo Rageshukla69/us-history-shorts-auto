@@ -25,8 +25,8 @@ except ImportError:
 class VideoComposer:
     WIDTH = 1080
     HEIGHT = 1920
-    SUBPIXEL_W = 3240
-    SUBPIXEL_H = 5760
+    SUBPIXEL_W = 1620
+    SUBPIXEL_H = 2880
     FPS = 30
 
     def __init__(self):
