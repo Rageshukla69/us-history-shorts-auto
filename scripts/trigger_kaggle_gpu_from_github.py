@@ -19,12 +19,26 @@ from pathlib import Path
 
 def main() -> int:
     kaggle_user = os.getenv("KAGGLE_USERNAME", "").strip()
-    kaggle_key = os.getenv("KAGGLE_KEY", "").strip()
+    kaggle_key = (os.getenv("KAGGLE_API_TOKEN") or os.getenv("KAGGLE_KEY") or "").strip()
     use_kaggle = os.getenv("USE_KAGGLE_GPU", "auto").strip().lower()
 
     if use_kaggle == "false" or not (kaggle_user and kaggle_key):
         print("[KaggleDispatch] KAGGLE_USERNAME / KAGGLE_KEY not set (or USE_KAGGLE_GPU=false); running pipeline directly on current runner.")
         return 2
+
+    # Bridge KAGGLE_KEY into all 3 auth mechanisms supported by the new kagglesdk CLI:
+    # 1) KAGGLE_API_TOKEN env var, 2) ~/.kaggle/access_token, and 3) ~/.kaggle/kaggle.json
+    os.environ["KAGGLE_API_TOKEN"] = kaggle_key
+    os.environ["KAGGLE_KEY"] = kaggle_key
+    os.environ["KAGGLE_USERNAME"] = kaggle_user
+    kaggle_cfg_dir = Path.home() / ".kaggle"
+    kaggle_cfg_dir.mkdir(parents=True, exist_ok=True)
+    access_tok_file = kaggle_cfg_dir / "access_token"
+    access_tok_file.write_text(kaggle_key, encoding="utf-8")
+    access_tok_file.chmod(0o600)
+    kaggle_json_file = kaggle_cfg_dir / "kaggle.json"
+    kaggle_json_file.write_text(json.dumps({"username": kaggle_user, "key": kaggle_key}), encoding="utf-8")
+    kaggle_json_file.chmod(0o600)
 
     try:
         import six  # noqa: F401
