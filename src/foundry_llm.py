@@ -29,7 +29,7 @@ EDITORIAL RULES:
 - Keep narration natural when spoken aloud. Avoid long clauses and dense dates.
 
 VISUAL RULES:
-- Image generation is optional and disabled by default. Never force an AI image in scene 1.
+- Up to 10 bespoke `MAI-Image-2.6-Flash` 9:16 vertical cinema reconstructions are available per Short (`prefer_media: "ai_image"`), paired with authentic archival video clips (`video_clip`) and historical photographs (`archival`). Use `ai_image` for dramatic close-ups, opening hooks, and specific historical beats where a bespoke vertical 9:16 shot elevates retention.
 - Prefer authentic archival footage for genuine motion, then historically relevant photographs, maps, artefacts and documents.
 - `video_query` must describe what should actually be visible (object/action/place), not just an institution or abstract topic.
 - `wikimedia_query` must describe the exact subject and period. `image_prompt` is a fallback only when paid generation is enabled.
@@ -141,7 +141,7 @@ class FoundryLLMClient:
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
     def generate_storyboard(self, topic: str) -> Dict[str, Any]:
-        max_ai = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "0")))
+        max_ai = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "10")))
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": (
