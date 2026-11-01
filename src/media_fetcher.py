@@ -100,11 +100,11 @@ class MediaFetcher:
 
         raw_max_ai = os.getenv("MAX_AI_IMAGES_PER_SHORT")
         if raw_max_ai is None or str(raw_max_ai).strip() == "":
-            raw_max_ai = os.getenv("MAX_AI_IMAGES_PER_VIDEO", "2")
+            raw_max_ai = os.getenv("MAX_AI_IMAGES_PER_VIDEO", "10")
         try:
             self.max_ai_images = max(0, int(str(raw_max_ai).strip()))
         except (TypeError, ValueError):
-            self.max_ai_images = 2
+            self.max_ai_images = 10
 
         self.ai_images_used = 0
         self.video_clips_used = 0
