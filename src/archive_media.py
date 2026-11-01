@@ -66,7 +66,8 @@ class ArchiveMediaFinder:
         self.session.headers.update({"User-Agent": UA})
         self.cache_dir = Path(cache_dir or os.getenv("MEDIA_CACHE_DIR", ".cache/media")) / "search"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.timeout = (5, 14)
+        self.timeout = (3.5, 5.5)
+        self.dead_hosts: set[str] = set()
 
     def _get_json(self, url: str, params: Optional[dict] = None, cache_seconds: int = 86400) -> dict:
         key = hashlib.sha256((url + json.dumps(params or {}, sort_keys=True)).encode()).hexdigest()
@@ -76,14 +77,25 @@ class ArchiveMediaFinder:
                 return json.loads(fp.read_text(encoding="utf-8"))
             except Exception:
                 pass
+        host = url.split("/")[2] if "://" in url else ""
+        if host in self.dead_hosts:
+            return {}
         try:
             r = self.session.get(url, params=params, timeout=self.timeout)
+            if r.status_code in (429, 502, 503, 504):
+                self.dead_hosts.add(host)
+                print(f"[ArchiveMedia] Circuit breaker tripped for {host} (HTTP {r.status_code}); skipping host for remainder of run.")
+                return {}
             r.raise_for_status()
             data = r.json()
             fp.write_text(json.dumps(data), encoding="utf-8")
             return data
         except Exception as exc:
-            print(f"[ArchiveMedia] API notice ({url.split('/')[2]}): {exc}")
+            if "timed out" in str(exc).lower() or "429" in str(exc):
+                self.dead_hosts.add(host)
+                print(f"[ArchiveMedia] Circuit breaker tripped for {host} ({exc}); skipping host for remainder of run.")
+            else:
+                print(f"[ArchiveMedia] API notice ({host}): {exc}")
             return {}
 
     @staticmethod
@@ -129,7 +141,7 @@ class ArchiveMediaFinder:
         if kind == "video":
             adapters = (self._wikimedia, self._internet_archive, self._nasa, self._loc, self._nara)
         else:
-            adapters = (self._wikimedia, self._wikipedia_search, self._openverse, self._loc, self._nasa, self._internet_archive, self._nara)
+            adapters = (self._wikimedia, self._wikipedia_search, self._loc, self._nasa, self._internet_archive, self._nara)
 
         for adapter in adapters:
             try:
