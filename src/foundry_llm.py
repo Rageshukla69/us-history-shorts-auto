@@ -1,15 +1,10 @@
 """
-Microsoft Foundry LLM Client (v7.5 — Hybrid Script-True Video Clip + Cost-Capped 4 AI Image Architect):
+Microsoft Foundry LLM Client (v10.0 — HyperFrames Studio Pro + Up to 10 MAI-Image-2.6-Flash Visual Director):
 - Mapped directly to your Heroku / GitHub Secrets (`FOUNDRY_TEXT_ENDPOINT`, `FOUNDRY_TEXT_API_KEY`, `gpt-6-luna`).
-- Balances:
-  1. **Real Moving Video Clips (`4 to 6 clips per Short`)**: Sourced from the Prelinger Archives (1920s–1970s 16mm/35mm
-     archival film), US National Archives, NASA Video Archive, and Wikimedia physical B-roll using physical/visual
-     `video_pool_queries` (banning political/agency names that return C-SPAN speeches or Zoom interviews!).
-  2. **Strict Cost-Capped AI Visuals (`MAX_AI_IMAGES_PER_SHORT = 4` Default)**: Uses `MAI-Image-2.6-Flash` on the 4
-     most specific story beats (Scene 1 Hook, Scene 4, Scene 7 Twist, Scene 10 Climax) so ultra-specific script beats
-     (like a veterinarian wiring a cat) are 100% literal while your AI image cost is cut by 67% (4 images instead of 12!).
-  3. **Strict LLM Verification with ZERO `else:` Override**: `verify_video_candidates()` and `verify_archival_candidates()`
-     explicitly reject any clip or photo that does not genuinely match the script's era and physical action.
+- Directs up to 10 bespoke 9:16 vertical `MAI-Image-2.6-Flash` cinema reconstructions per Short (`MAX_AI_IMAGES_PER_SHORT = 10` default),
+  combined with verified archival motion footage and unique historical photographs.
+- Authors rich per-scene HyperFrames motion metadata (`on_screen_callout`, `stat_value`, `stat_label`, `era_tag`, `scene_archetype`)
+  so every scene drives custom HTML+CSS+SVG+GSAP choreography.
 """
 import json
 import os
@@ -18,24 +13,26 @@ from typing import Any, Dict, List
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-SYSTEM_PROMPT = """You are the story editor and visual director for a premium US-history documentary Shorts channel.
-Write a factual, source-conscious 45-60 second script (105-135 spoken words) in 8-12 scenes.
+SYSTEM_PROMPT = """You are the executive story editor and HyperFrames motion-graphics director for a flagship US/World history documentary Shorts channel.
+Write a factual, high-retention 48-58 second script (110-135 spoken words) structured into 9-10 tight scenes.
 
 EDITORIAL RULES:
-- Hook with a verifiable surprise, not fabricated numbers or clickbait certainty.
-- Distinguish established facts, disputed claims and legends. Never invent quotations, dollar values, motives or dialogue.
-- Avoid repeating the same fact. Give each scene one clear story beat and one concrete visual subject.
-- Provide 3-6 source URLs or named sources in `sources`; prefer primary/authoritative sources (NARA, LOC, Smithsonian, official archives, academic institutions). If a claim is uncertain, say so in narration or description.
-- Keep narration natural when spoken aloud. Avoid long clauses and dense dates.
+- Open Scene 1 with an immediate, verifiable historical surprise or paradox.
+- Distinguish established facts, disputed claims, and legends. Never invent quotations, dollar values, motives, or dialogue.
+- Give each scene ONE clear story beat and ONE distinct, concrete visual subject (never repeat the same visual subject across two scenes).
+- Provide 3-6 authoritative sources in `sources` (NARA, LOC, Smithsonian, British Museum, peer-reviewed studies, official archives).
+- Keep narration punchy and natural when spoken aloud (10-15 words per scene).
 
-VISUAL RULES:
-- Up to 10 bespoke `MAI-Image-2.6-Flash` 9:16 vertical cinema reconstructions are available per Short (`prefer_media: "ai_image"`), paired with authentic archival video clips (`video_clip`) and historical photographs (`archival`). Use `ai_image` for dramatic close-ups, opening hooks, and specific historical beats where a bespoke vertical 9:16 shot elevates retention.
-- Prefer authentic archival footage for genuine motion, then historically relevant photographs, maps, artefacts and documents.
-- `video_query` must describe what should actually be visible (object/action/place), not just an institution or abstract topic.
-- `wikimedia_query` must describe the exact subject and period. `image_prompt` is a fallback only when paid generation is enabled.
-- `visual_subject` should be a short, concrete description of the visible subject. `visual_keywords` should contain 3-8 distinctive nouns/entities.
-- Do not imply that generic stock footage is archival evidence. Label reconstructions honestly.
-- Choose `prefer_media` from `video_clip`, `archival`, `ai_image`; use `ai_image` only for scenes where no authentic source can reasonably exist.
+HYPERFRAMES & MAI-IMAGE-2.6-FLASH VISUAL RULES:
+- You have a budget of up to 10 `MAI-Image-2.6-Flash` bespoke 9:16 vertical cinema reconstructions (`prefer_media: "ai_image"`).
+- Set `prefer_media: "ai_image"` on 7 to 10 scenes (especially Scene 1 Hook, dramatic human action beats, close-up mechanical/historical reconstructions, and the Climax) where a razor-sharp 9:16 vertical cinema shot looks far better than a low-res horizontal crop or schematic diagram.
+- Use `prefer_media: "video_clip"` or `"archival"` ONLY when an iconic, high-resolution photograph or archival film clip of that exact distinct subject exists.
+- Every `image_prompt` MUST describe a hyper-detailed, photorealistic vertical 9:16 cinema shot (specific lighting, lens, period wardrobe/hardware, foreground/background depth, zero text).
+- Include HyperFrames HUD metadata on each scene:
+  - `on_screen_callout`: 2-4 uppercase words summarizing the beat (e.g., `"FOUND AT 140 FEET"`, `"30+ BRONZE GEARS"`, `"1901 AEGEAN WRECK"`).
+  - `stat_value`: Optional short number/year if relevant to the scene (e.g., `"1901"`, `"2,000+"`, `"30+"`, `"82"`, or `""` if no number).
+  - `stat_label`: Optional 2-3 word unit/label for `stat_value` (e.g., `"DISCOVERY YEAR"`, `"YEARS OLD"`, `"BRONZE WHEELS"`, `"RECOVERED FRAGMENTS"`).
+  - `era_tag`: Short era/location stamp (e.g., `"AEGEAN SEA // 1901"`, `"2ND CENTURY BCE"`, `"ATHENS MUSEUM"`).
 
 Return ONLY valid JSON with this shape:
 {
@@ -43,24 +40,27 @@ Return ONLY valid JSON with this shape:
   "description": "Two or three concise sentences with historical context and source note",
   "tags": ["history", "shorts", "ushistory", "documentary"],
   "sources": [{"name":"Source name","url":"https://..."}],
-  "historical_era_keywords": ["1960s", "Cold War"],
+  "historical_era_keywords": ["1901", "Ancient Greece"],
   "wikipedia_articles": ["Relevant article title"],
   "video_pool_queries": ["specific physical action or object query"],
   "required_visual_keywords": ["distinctive subject terms"],
   "is_space_or_science": false,
   "scenes": [{
     "scene_id": 1,
-    "narration": "One short spoken beat.",
+    "narration": "One tight, punchy spoken beat.",
     "visual_subject": "Specific visible subject and action",
     "visual_keywords": ["subject", "object", "period"],
     "video_query": "Specific physical footage query",
     "pexels_query": "Specific visual query, not an abstract topic",
     "wikimedia_query": "Exact historical subject photograph",
     "wikipedia_article": "Relevant article title",
-    "image_prompt": "Historically accurate documentary reconstruction prompt; no text",
-    "prefer_media": "archival",
+    "image_prompt": "Photorealistic 9:16 vertical historical cinema shot of ..., dramatic rim lighting, 35mm Kodak film grain, shallow depth of field, no text",
+    "prefer_media": "ai_image",
     "effect": "smooth_push_in",
-    "on_screen_callout": "SHORT FACT OR DATE"
+    "on_screen_callout": "SHORT FACT OR DATE",
+    "stat_value": "2,000+",
+    "stat_label": "YEARS OLD",
+    "era_tag": "AEGEAN SEA // 1901"
   }]
 }
 """
@@ -142,14 +142,16 @@ class FoundryLLMClient:
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
     def generate_storyboard(self, topic: str) -> Dict[str, Any]:
         max_ai = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "10")))
+        target_ai_min = min(max_ai, 7) if max_ai >= 7 else max_ai
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": (
-                f"Create a 45-60 second documentary Short about: {topic!r}. "
-                "Use 8-12 scenes, 105-135 spoken words total. "
-                f"Paid image-generation budget is {max_ai}; set at most {max_ai} scenes to ai_image, "
-                "and do not force AI imagery for the opening. Make every scene's visual_subject concrete. "
-                "Provide source URLs/names for key factual claims. Return JSON only."
+                f"Create a 48-58 second documentary Short about: {topic!r}. "
+                "Use 9-10 scenes, 110-135 spoken words total. "
+                f"Your `MAI-Image-2.6-Flash` budget is {max_ai} images per Short: set `prefer_media` to `\"ai_image\"` on "
+                f"between {target_ai_min} and {max_ai} scenes (including Scene 1 Hook, dramatic reconstructions, and Climax) "
+                "so the Short has breathtaking 9:16 vertical visuals and never repeats archival photos. "
+                "Include `on_screen_callout`, `stat_value`, `stat_label`, and `era_tag` on each scene. Return JSON only."
             )},
         ]
         content = self._call_chat_completions(messages)
@@ -159,31 +161,46 @@ class FoundryLLMClient:
         scenes = storyboard.get("scenes") or []
         if not isinstance(scenes, list) or not scenes:
             raise RuntimeError("Storyboard contained no scenes.")
+
         for idx, scene in enumerate(scenes, 1):
             scene["scene_id"] = int(scene.get("scene_id") or idx)
             scene["narration"] = str(scene.get("narration") or "").strip()
-            scene["visual_subject"] = str(scene.get("visual_subject") or scene.get("wikimedia_query") or scene.get("video_query") or topic).strip()
+            scene["visual_subject"] = str(
+                scene.get("visual_subject") or scene.get("wikimedia_query") or scene.get("video_query") or topic
+            ).strip()
             scene["visual_keywords"] = scene.get("visual_keywords") or []
             if scene.get("prefer_media") not in {"video_clip", "archival", "ai_image"}:
-                scene["prefer_media"] = "archival"
-        # Enforce budget independently of model compliance.
+                scene["prefer_media"] = "ai_image" if max_ai >= 6 else "archival"
+
+        # If max_ai >= 6 and the LLM under-allocated `ai_image`, promote key narrative beats up to target_ai_min
+        current_ai = sum(1 for s in scenes if s.get("prefer_media") == "ai_image")
+        if max_ai >= 6 and current_ai < target_ai_min:
+            priority_indices = [0, len(scenes) - 1, len(scenes) // 2, 1, len(scenes) - 2, 3, 5, 2, 4, 6]
+            for p_idx in priority_indices:
+                if current_ai >= target_ai_min:
+                    break
+                if 0 <= p_idx < len(scenes) and scenes[p_idx].get("prefer_media") != "ai_image":
+                    scenes[p_idx]["prefer_media"] = "ai_image"
+                    current_ai += 1
+
+        # Enforce hard cap independently of model compliance
         ai_left = max_ai
         for scene in scenes:
             if scene.get("prefer_media") == "ai_image" and ai_left > 0:
                 ai_left -= 1
             elif scene.get("prefer_media") == "ai_image":
                 scene["prefer_media"] = "archival"
-        print(f"[FoundryLLM] Storyboard '{storyboard.get('title')}' ({len(scenes)} scenes; paid image cap={max_ai}).")
+
+        ai_allocated = sum(1 for s in scenes if s.get("prefer_media") == "ai_image")
+        print(
+            f"[FoundryLLM] Storyboard '{storyboard.get('title')}' "
+            f"({len(scenes)} scenes; ai_image allocated={ai_allocated}/{max_ai})."
+        )
         return storyboard
 
     def verify_video_candidates(
         self, topic: str, candidates: List[Dict[str, str]]
     ) -> List[str]:
-        """
-        Strict LLM Video Clip Gate (WITH ZERO `else:` FALLBACK):
-        Approves ONLY genuine vintage archival footage (Prelinger / NARA / NASA) or clean physical B-roll
-        of the exact machines, vehicles, animals, or historical locations in the script.
-        """
         if not candidates:
             return []
         try:
@@ -247,7 +264,8 @@ class FoundryLLMClient:
                         "(with id, title, desc), return `{\"approved_ids\": [...]}` containing ONLY the IDs of genuine historical photographs "
                         "that directly depict the exact era, event, hardware, or location of `Historical Topic`.\n"
                         "STRICTLY REJECT (return `[]` if none qualify):\n"
-                        "- Paintings of 18th/19th century presidents (like George Washington) on 20th-century topics\n"
+                        "- Flat technical schematics, computer diagrams, CAD drawings, or charts\n"
+                        "- Paintings of 18th/19th century presidents on 20th-century topics\n"
                         "- Unrelated wars or desert artillery cannons that do not belong to the exact event\n"
                         "- Flat vector logos, agency seals, coats of arms, or flags\n"
                         "- Typed text pages or modern radio telescopes."
