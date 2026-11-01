@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
@@ -35,7 +36,9 @@ ABSOLUTE_REJECT_PATTERNS = re.compile(
     r"lego|minifigure|action[ _-]?figure|toy[ _-]?review|cosplay|tiktok[ _-]?trend|"
     r"commons[ _-]?logo|wikimedia[ _-]?logo|qr[ _-]?code|barcode|"
     r"schematic|diagram|flowchart|blueprint[ _-]?diagram|cross[ _-]?section[ _-]?scheme|"
-    r"vector[ _-]?diagram|chart|graph|plot|infographic)",
+    r"vector[ _-]?diagram|chart|graph|plot|infographic|"
+    r"selfie|webcam|petting[ _-]?zoo|blaze[ _-]?orange|camouflage|modern[ _-]?hunter|"
+    r"book[ _-]?binding|marbled[ _-]?paper|carte[ _-]?des[ _-]?routes)",
     re.IGNORECASE,
 )
 
@@ -365,7 +368,9 @@ class MediaFetcher:
         # ---------------------------------------------------------------------
         # 1) Bespoke 9:16 MAI-Image-2.6-Flash First when `prefer == "ai_image"`
         # ---------------------------------------------------------------------
+        tried_ai_this_scene = False
         if prefer == "ai_image" and can_use_ai:
+            tried_ai_this_scene = True
             prompt = str(scene.get("image_prompt") or subject or narration)
             ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
@@ -420,6 +425,14 @@ class MediaFetcher:
             image_candidates.extend(self.archive_finder.search(q, "image", limit=10))
 
         image_candidates = rank_candidates(image_candidates, scene)
+        if self.llm_client is not None and image_candidates:
+            for idx_c, c in enumerate(image_candidates):
+                c["id"] = str(idx_c)
+            approved_ids = set(self.llm_client.verify_archival_candidates(f"{self.topic} — {subject}", image_candidates[:25]))
+            if approved_ids:
+                image_candidates = [c for c in image_candidates if c.get("id") in approved_ids]
+            elif can_use_ai:
+                image_candidates = []
         image_dest = assets_dir / f"scene_{scene_id:02d}_archive.jpg"
 
         min_thresholds = (2,) if can_use_ai else (2, 1)
@@ -452,7 +465,7 @@ class MediaFetcher:
         # ---------------------------------------------------------------------
         # 4) Gap-Filler AI Image (whenever archival search found no unique photo and budget remains)
         # ---------------------------------------------------------------------
-        if can_use_ai:
+        if can_use_ai and not tried_ai_this_scene:
             prompt = str(scene.get("image_prompt") or subject or narration)
             ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
@@ -598,24 +611,55 @@ class MediaFetcher:
                 ),
             ]
 
+            if self.ai_images_used > 0:
+                time.sleep(2.5)
+
+            backoff_schedule = (12.0, 22.0, 35.0, 48.0, 60.0)
             for url, payload in route_attempts:
-                resp = requests.post(url, headers=headers, json=payload, timeout=60)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    items = data.get("data", [])
-                    if items and "b64_json" in items[0]:
-                        dest_path.write_bytes(base64.b64decode(items[0]["b64_json"]))
-                    elif items and "url" in items[0]:
-                        img_r = self.session.get(items[0]["url"], timeout=35)
-                        img_r.raise_for_status()
-                        dest_path.write_bytes(img_r.content)
-                    else:
+                for attempt in range(6):
+                    try:
+                        resp = requests.post(url, headers=headers, json=payload, timeout=65)
+                    except Exception as req_exc:
+                        if attempt < 5:
+                            time.sleep(backoff_schedule[min(attempt, len(backoff_schedule) - 1)])
+                            continue
+                        print(f"[MediaFetcher] Foundry request error on {url.split('//')[-1][:36]}: {req_exc}")
+                        break
+
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        items = data.get("data", [])
+                        if items and "b64_json" in items[0]:
+                            dest_path.write_bytes(base64.b64decode(items[0]["b64_json"]))
+                        elif items and "url" in items[0]:
+                            img_r = self.session.get(items[0]["url"], timeout=35)
+                            img_r.raise_for_status()
+                            dest_path.write_bytes(img_r.content)
+                        else:
+                            break
+                        with Image.open(dest_path) as im:
+                            rgb = im.convert("RGB")
+                            self.used_dhashes.append(self._compute_dhash(rgb))
+                            rgb.save(dest_path, quality=96)
+                        return dest_path
+
+                    if resp.status_code in (429, 500, 502, 503, 504) and attempt < 5:
+                        raw_ra = resp.headers.get("Retry-After") or ""
+                        raw_ms = resp.headers.get("x-ms-retry-after-ms") or ""
+                        try:
+                            if raw_ra:
+                                retry_after = float(raw_ra) + 2.0
+                            elif raw_ms:
+                                retry_after = (float(raw_ms) / 1000.0) + 2.0
+                            else:
+                                retry_after = backoff_schedule[min(attempt, len(backoff_schedule) - 1)]
+                        except ValueError:
+                            retry_after = backoff_schedule[min(attempt, len(backoff_schedule) - 1)]
+                        wait_s = min(max(retry_after, 10.0), 65.0)
+                        print(f"[MediaFetcher] Foundry {self.image_model} HTTP {resp.status_code} (rate-limit); sleeping {wait_s:.1f}s before retry {attempt + 2}/6...")
+                        time.sleep(wait_s)
                         continue
-                    with Image.open(dest_path) as im:
-                        rgb = im.convert("RGB")
-                        self.used_dhashes.append(self._compute_dhash(rgb))
-                        rgb.save(dest_path, quality=96)
-                    return dest_path
+                    break
             return None
         except Exception as exc:
             print(f"[MediaFetcher] Foundry {self.image_model} notice: {exc}")
