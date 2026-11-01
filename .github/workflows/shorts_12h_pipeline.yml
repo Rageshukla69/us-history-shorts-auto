@@ -105,6 +105,7 @@ jobs:
           COMFYUI_API_URL: ${{ secrets.COMFYUI_API_URL || vars.COMFYUI_API_URL || '' }}
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_KEY }}
           USE_KAGGLE_GPU: ${{ github.event.inputs.use_kaggle_gpu || 'auto' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPO: ${{ github.repository }}
