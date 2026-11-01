@@ -55,6 +55,7 @@ Return ONLY valid JSON with this shape:
     "wikimedia_query": "Exact historical subject photograph",
     "wikipedia_article": "Relevant article title",
     "image_prompt": "Photorealistic 9:16 vertical historical cinema shot of ..., dramatic rim lighting, 35mm Kodak film grain, shallow depth of field, no text",
+    "motion_prompt": "Slow cinematic dolly push-in, natural realistic physical motion of ..., subtle atmospheric smoke/light movement, 35mm documentary realism",
     "prefer_media": "ai_image",
     "effect": "smooth_push_in",
     "on_screen_callout": "SHORT FACT OR DATE",
@@ -169,6 +170,10 @@ class FoundryLLMClient:
                 scene.get("visual_subject") or scene.get("wikimedia_query") or scene.get("video_query") or topic
             ).strip()
             scene["visual_keywords"] = scene.get("visual_keywords") or []
+            scene["motion_prompt"] = str(
+                scene.get("motion_prompt")
+                or f"Cinematic 35mm documentary dolly movement, natural realistic motion of {scene['visual_subject']}, atmospheric lighting"
+            ).strip()
             if scene.get("prefer_media") not in {"video_clip", "archival", "ai_image"}:
                 scene["prefer_media"] = "ai_image" if max_ai >= 6 else "archival"
 
