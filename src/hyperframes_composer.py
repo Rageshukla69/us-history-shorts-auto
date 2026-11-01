@@ -356,7 +356,7 @@ class HyperFramesComposer:
             callout = _esc((s.get("on_screen_callout") or f"CHRONICLE BEAT #{idx + 1:02d}").upper()[:28])
             subject = _esc((s.get("visual_subject") or topic)[:68])
             era_tag = _esc((s.get("era_tag") or f"SCENE {idx + 1:02d} // {n_scenes:02d}").upper()[:28])
-            kind_badge = "AI 9:16 RECONSTRUCTION" if "AI RECONSTRUCTION" in str(s.get("asset_kind", "")) else "ARCHIVAL RECORD"
+            kind_badge = "COMFYUI 9:16 AI VIDEO" if "COMFYUI" in str(s.get("asset_kind", "")) else ("AI 9:16 RECONSTRUCTION" if "AI RECONSTRUCTION" in str(s.get("asset_kind", "")) else "ARCHIVAL RECORD")
             stat_info = _extract_smart_stat(s)
 
             # Proven v9.0 visibility switching contract (using class="scene" without class="clip" so
