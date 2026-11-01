@@ -142,7 +142,7 @@ class FoundryLLMClient:
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
     def generate_storyboard(self, topic: str) -> Dict[str, Any]:
         max_ai = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "10")))
-        target_ai_min = min(max_ai, 7) if max_ai >= 7 else max_ai
+        target_ai_min = max_ai
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": (
@@ -174,10 +174,10 @@ class FoundryLLMClient:
 
         # If max_ai >= 6 and the LLM under-allocated `ai_image`, promote key narrative beats up to target_ai_min
         current_ai = sum(1 for s in scenes if s.get("prefer_media") == "ai_image")
-        if max_ai >= 6 and current_ai < target_ai_min:
+        if max_ai >= 1 and current_ai < min(max_ai, len(scenes)):
             priority_indices = [0, len(scenes) - 1, len(scenes) // 2, 1, len(scenes) - 2, 3, 5, 2, 4, 6]
             for p_idx in priority_indices:
-                if current_ai >= target_ai_min:
+                if current_ai >= min(max_ai, len(scenes)):
                     break
                 if 0 <= p_idx < len(scenes) and scenes[p_idx].get("prefer_media") != "ai_image":
                     scenes[p_idx]["prefer_media"] = "ai_image"
