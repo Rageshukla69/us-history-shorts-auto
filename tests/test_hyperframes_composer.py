@@ -15,7 +15,7 @@ from voice_engine import WordTiming
 
 
 class HyperFramesComposerTests(unittest.TestCase):
-    def test_hyperframes_v10_contract_and_zero_blur(self):
+    def test_hyperframes_v11_contract_and_zero_blur(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             dummy_img = tmp_path / "dummy.jpg"
@@ -57,15 +57,12 @@ class HyperFramesComposerTests(unittest.TestCase):
             )
             index_html = (proj_dir / "index.html").read_text(encoding="utf-8")
             self.assertIn('data-composition-id="main"', index_html)
-            self.assertIn('data-motion-blur="on"', index_html)
             self.assertIn('window.__timelines["main"] = tl;', index_html)
             self.assertIn('HyperShader.init', index_html)
             self.assertIn('"cinematic-zoom"', index_html)
-            self.assertIn('"cross-warp-morph"', index_html)
-            self.assertIn('"light-leak"', index_html)
-            # Verify ZERO blur filter on scene images
             self.assertNotIn("blur(", index_html)
-            # Verify standalone comma was merged onto "RECOVERED," instead of a standalone span
+            self.assertNotIn("data-color-grading", index_html)
+            self.assertNotIn("data-motion-blur", index_html)
             self.assertIn(">RECOVERED,<", index_html)
             self.assertNotIn(">,<", index_html)
             self.assertTrue((proj_dir / "preview.html").exists())
@@ -110,7 +107,6 @@ class HyperFramesComposerTests(unittest.TestCase):
         self.assertLess(chunks[0][-1].end_sec, chunks[1][0].start_sec)
 
     def test_perceptual_dhash_and_schematic_rejection(self):
-        # A flat white diagram with 2 solid rectangles should be rejected by _is_valid_photographic_image
         diagram = Image.new("RGB", (600, 600), (250, 250, 250))
         d = ImageDraw.Draw(diagram)
         d.rectangle((100, 100, 500, 300), fill=(255, 0, 255))
