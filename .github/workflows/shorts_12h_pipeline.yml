@@ -80,7 +80,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt kaggle
+          pip install -r requirements.txt kaggle six
 
       - name: Run Automated Unit Tests
         run: |
