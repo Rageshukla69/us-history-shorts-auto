@@ -26,6 +26,11 @@ def main() -> int:
         print("[KaggleDispatch] KAGGLE_USERNAME / KAGGLE_KEY not set (or USE_KAGGLE_GPU=false); running pipeline directly on current runner.")
         return 2
 
+    try:
+        import six  # noqa: F401
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "six"], check=False)
+
     kernel_slug = os.getenv("KAGGLE_KERNEL_SLUG", "auto-us-history-comfyui-shorts").strip()
     kernel_id = f"{kaggle_user}/{kernel_slug}"
 
