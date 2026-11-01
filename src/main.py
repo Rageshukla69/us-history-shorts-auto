@@ -1,11 +1,12 @@
 """
-Main End-to-End Orchestrator for the Automated US History Shorts Channel (v7.5 — Hybrid Video Clip + Cost-Capped 4 AI Image Edition).
-Writes a complete **Visual & Cost Breakdown Table** directly onto your GitHub Actions Run Summary page (`$GITHUB_STEP_SUMMARY`)
-after every single run so you can see at a glance:
-- Exact number of AI images generated (e.g. `4 / 4 cap`)
-- Exact number of Real Video Clips used
-- Exact number of Archival Photos used
-- Scene-by-scene table of every visual used in the Short!
+Main End-to-End Orchestrator for the Automated US History Shorts Channel (v9.0 — HeyGen HyperFrames + Up to 10 MAI-Image-2.6-Flash Cinema Edition).
+1. Selects next unused US/World history topic (`src/topic_manager.py`)
+2. Generates 8-12 rapid story beats via `gpt-6-luna` (`src/foundry_llm.py`) with up to 10 `MAI-Image-2.6-Flash` shots + archival footage
+3. Synthesizes young US English voiceover (`en-US-BrianMultilingualNeural`) with exact millisecond word timestamps (`src/voice_engine.py`)
+4. Fetches authentic archival video clips, archival photos, and up to 10 bespoke 9:16 `MAI-Image-2.6-Flash` visuals (`src/media_fetcher.py`)
+5. Builds the complete **HeyGen HyperFrames HTML + CSS + GSAP + HyperShader** project (`output/hyperframes_project/index.html`, `preview.html`, `DESIGN.md`)
+6. Renders the final `1080x1920` MP4 via `npx hyperframes render` (with automatic hybrid FFmpeg dual-camera fallback so CI never fails)
+7. Runs technical & visual Quality Control (`src/quality_control.py`), publishes to YouTube (`src/youtube_uploader.py`), and logs a full audit table to `$GITHUB_STEP_SUMMARY`.
 """
 from datetime import datetime, timezone
 import json
@@ -20,6 +21,7 @@ from voice_engine import VoiceEngine
 from media_fetcher import MediaFetcher
 from caption_builder import generate_synced_ass_captions
 from video_composer import VideoComposer
+from hyperframes_composer import HyperFramesComposer
 from youtube_uploader import upload_short_to_youtube
 from quality_control import validate_rendered_short
 
@@ -55,14 +57,19 @@ def _should_skip_backup_cron_slot(min_hours_between_uploads: float = 8.0) -> boo
     return False
 
 
-def _write_github_step_summary(topic: str, title: str, fetcher: MediaFetcher, video_id: str):
-    """
-    Writes a clean Markdown table to `$GITHUB_STEP_SUMMARY` (displayed right on the GitHub Actions run page)
-    and prints it to the console so you always know the exact count of AI images, video clips, and photos used!
-    """
+def _write_github_step_summary(
+    topic: str,
+    title: str,
+    fetcher: MediaFetcher,
+    video_id: str,
+    rendered_via_hyperframes_cli: bool,
+):
+    engine_label = "HeyGen HyperFrames CLI (`npx hyperframes render`)" if rendered_via_hyperframes_cli else "HyperFrames HTML Bundle + Hybrid FFmpeg Cinema Engine"
     lines = [
-        f"## 🎬 US History Short Run Summary — `{title}`",
+        f"## 🎬 US History Short Run Summary (v9.0 HyperFrames Edition) — `{title}`",
         f"- **Historical Topic**: {topic}",
+        f"- **Render Engine**: {engine_label}",
+        f"- **HyperFrames Composition Bundle**: `output/hyperframes_project/index.html` (`preview.html`, `DESIGN.md`)",
         f"- **YouTube Video ID**: `{video_id}`",
         "",
         "### 📊 Visual & Cost Breakdown",
@@ -112,7 +119,7 @@ def run_pipeline():
     custom_topic = os.getenv("CUSTOM_TOPIC", "").strip()
     topic = custom_topic if custom_topic else select_next_topic(llm_client=llm)
 
-    # Step 1: Storyboard & Physical Video Pool Queries via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
+    # Step 1: Storyboard via `FOUNDRY_TEXT_MODEL` (`gpt-6-luna`)
     storyboard = llm.generate_storyboard(topic)
     scenes = storyboard.get("scenes", [])
     if not scenes:
@@ -124,7 +131,7 @@ def run_pipeline():
         scenes, temp_dir / "audio"
     )
 
-    # Step 3: Fetch Verified Video Clips + Verified Archival Photos + Cost-Capped MAI-Image Visuals
+    # Step 3: Fetch Verified Video Clips + Archival Photos + Up to 10 MAI-Image-2.6-Flash Visuals
     fetcher = MediaFetcher(
         topic=topic,
         era_keywords=storyboard.get("historical_era_keywords", []),
@@ -140,16 +147,33 @@ def run_pipeline():
         scene["asset_type"] = asset_type
         scene["asset_kind"] = fetcher.scene_audit_log[-1].get("kind", "UNKNOWN") if fetcher.scene_audit_log else "UNKNOWN"
 
-    # Step 4: Generate Pro Creator Multi-Color Word-Synced Captions + Subscribe CTA (.ass)
+    # Step 4: Generate Word-Synced Captions (.ass) & Broadcast -14 LUFS Master Audio Mix
     ass_path = output_dir / "subtitles.ass"
     generate_synced_ass_captions(word_timings, enriched_scenes, ass_path)
 
-    # Step 5: Render 1080x1920 MP4 with Dual-Camera Axial Cuts, IMAX Video Framing & -14 LUFS Audio
     composer = VideoComposer()
-    final_mp4 = output_dir / "final_short.mp4"
-    composer.render_short(enriched_scenes, master_vo, ass_path, final_mp4, temp_dir / "segments")
+    total_duration = sum(max(0.8, float(s.get("duration_sec", 2.5))) for s in enriched_scenes)
+    mixed_audio_wav = temp_dir / "master_mix.wav"
+    composer._build_master_audio_mix(
+        master_vo, mixed_audio_wav, temp_dir, scenes=enriched_scenes, total_duration=total_duration
+    )
 
-    # Step 6: Technical QC. A failed gate blocks upload, never silently publishes a poor render.
+    # Step 5: Author Complete HeyGen HyperFrames Project (`output/hyperframes_project/`) & Render MP4
+    hf_composer = HyperFramesComposer(project_dir=output_dir / "hyperframes_project")
+    hf_project_dir = hf_composer.build_project(
+        topic=topic,
+        title=storyboard.get("title", topic),
+        scenes=enriched_scenes,
+        word_timings=word_timings,
+        master_audio_wav=mixed_audio_wav,
+    )
+
+    final_mp4 = output_dir / "final_short.mp4"
+    rendered_via_hf_cli = hf_composer.try_cli_render(final_mp4)
+    if not rendered_via_hf_cli:
+        composer.render_short(enriched_scenes, master_vo, ass_path, final_mp4, temp_dir / "segments")
+
+    # Step 6: Technical & Documentary QC Gate
     qc = validate_rendered_short(final_mp4, enriched_scenes, output_dir / "quality_report.json")
     print(f"[QualityControl] PASS: {qc}")
 
@@ -160,6 +184,8 @@ def run_pipeline():
                 "topic": topic,
                 "title": storyboard.get("title"),
                 "description": storyboard.get("description"),
+                "render_engine": "hyperframes_cli" if rendered_via_hf_cli else "hyperframes_hybrid_ffmpeg",
+                "hyperframes_project_dir": str(hf_project_dir),
                 "ai_images_used": fetcher.ai_images_used,
                 "max_ai_images_cap": fetcher.max_ai_images,
                 "video_clips_used": fetcher.video_clips_used,
@@ -177,8 +203,7 @@ def run_pipeline():
         encoding="utf-8",
     )
 
-
-    # Step 7: Upload to YouTube (only after QC; DRY_RUN=true skips upload).
+    # Step 7: Upload to YouTube
     video_id = upload_short_to_youtube(
         video_path=final_mp4,
         title=storyboard.get("title", topic),
@@ -189,12 +214,14 @@ def run_pipeline():
     )
 
     # Step 8: Write Visual & Cost Audit Table to GitHub Actions Run Summary (`$GITHUB_STEP_SUMMARY`)
-    _write_github_step_summary(topic, storyboard.get("title", topic), fetcher, video_id)
+    _write_github_step_summary(
+        topic, storyboard.get("title", topic), fetcher, video_id, rendered_via_hf_cli
+    )
 
     # Step 9: Mark topic as used and push immediately to GitHub
     if video_id != "dry_run_id":
         mark_topic_completed(topic, video_id=video_id, title=storyboard.get("title", topic))
-    print(f"[Pipeline] Completed v7.5 run for topic: '{topic}' (video_id={video_id})")
+    print(f"[Pipeline] Completed v9.0 HyperFrames run for topic: '{topic}' (video_id={video_id})")
 
 
 if __name__ == "__main__":
