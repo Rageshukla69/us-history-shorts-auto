@@ -1,0 +1,14 @@
+{
+  "name": "us-history-shorts-hyperframes",
+  "version": "9.0.0",
+  "private": true,
+  "description": "Autonomous US History YouTube Shorts Studio powered by HeyGen HyperFrames (HTML+CSS+GSAP+HyperShader), GPT-6 Luna, and MAI-Image-2.6-Flash (up to 10 AI images/Short)",
+  "scripts": {
+    "lint:hyperframes": "npx hyperframes lint output/hyperframes_project",
+    "preview:hyperframes": "npx hyperframes preview output/hyperframes_project",
+    "render:hyperframes": "npx hyperframes render output/hyperframes_project --output output/final_short.mp4"
+  },
+  "dependencies": {
+    "hyperframes": "latest"
+  }
+}
