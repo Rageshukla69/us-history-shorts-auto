@@ -1,13 +1,10 @@
 """
-Streamlined Multi-Archive & Cost-Capped Visual Fetcher (v8.1):
-1. Pre-loads high-resolution historical photographs directly from the topic's Wikipedia articles (`wikipedia_articles`)
-   so every Short starts with a rich pool of 100% relevant, rights-cleared archival photos at $0.00 cost.
-2. Scene-level multi-archive search across Wikimedia Commons, Wikipedia, Internet Archive (Prelinger / NARA),
-   Library of Congress, NASA, and Openverse.
-3. Hard-capped Paid AI Image Gap-Filler (`MAX_AI_IMAGES_PER_SHORT = 2` default; `0` = $0 AI spend):
-   Only calls `MAI-Image-2.6-Flash` when archival video & photo searches find no match for a specific scene.
-4. Distinct Macro Crop before Editorial Plate: If a scene still needs a visual and the AI cap is reached,
-   creates a distinct quadrant close-up crop from an unused archival photo before ever falling back to a text card.
+Multi-Archive & Up-to-10 MAI-Image-2.6-Flash Visual Fetcher (`src/media_fetcher.py` — v10.0):
+1. Supports up to 10 bespoke 9:16 vertical `MAI-Image-2.6-Flash` cinema reconstructions per Short (`MAX_AI_IMAGES_PER_SHORT = 10` default).
+2. Perceptual 64-bit Difference Hashing (`dHash`) blocks near-duplicate crops or resizes of the same Wikimedia/Wikipedia archival photo
+   (eliminating the bug where the same artifact photo appeared 3 times in one Short!).
+3. Strict Diagram / Schematic / Chart Rejection (`_is_valid_photographic_image`) rejects flat white/neon technical diagrams,
+   charts, and low-entropy schematics so only true photographs or 9:16 AI cinema reconstructions ever reach the screen.
 """
 import base64
 import hashlib
@@ -28,15 +25,17 @@ except ImportError:
     from src.archive_media import ArchiveMediaFinder, rank_candidates
 
 USER_AGENT = (
-    "USHistoryShortsBot/8.1 "
-    "(https://github.com/Rageshukla69/us-history-shorts-auto; DocumentaryPipeline/8.1)"
+    "USHistoryShortsBot/10.0 "
+    "(https://github.com/Rageshukla69/us-history-shorts-auto; DocumentaryPipeline/10.0)"
 )
 
 ABSOLUTE_REJECT_PATTERNS = re.compile(
     r"(shutterstock|getty[ _-]?images?|alamy[ _-]?stock|stock[ _-]?photo|watermark|"
     r"minecraft|fortnite|roblox|videogame|gameplay|anime|manga|hentai|cartoon|meme|parody|"
     r"lego|minifigure|action[ _-]?figure|toy[ _-]?review|cosplay|tiktok[ _-]?trend|"
-    r"commons[ _-]?logo|wikimedia[ _-]?logo|qr[ _-]?code|barcode)",
+    r"commons[ _-]?logo|wikimedia[ _-]?logo|qr[ _-]?code|barcode|"
+    r"schematic|diagram|flowchart|blueprint[ _-]?diagram|cross[ _-]?section[ _-]?scheme|"
+    r"vector[ _-]?diagram|chart|graph|plot|infographic)",
     re.IGNORECASE,
 )
 
@@ -112,6 +111,8 @@ class MediaFetcher:
         self.reframed_cuts_used = 0
         self.used_urls: Set[str] = set()
         self.used_hashes: Set[str] = set()
+        self.used_dhashes: List[int] = []
+        self.used_title_stems: Set[str] = set()
         self.attributions: List[str] = []
         self.topic_article_images: List[Dict[str, Any]] = []
         self.ai_generated_images: List[Path] = []
@@ -119,7 +120,6 @@ class MediaFetcher:
         self.scene_audit_log: List[Dict[str, Any]] = []
         self.archive_finder = ArchiveMediaFinder(session=self.session, cache_dir=self.media_cache_dir)
 
-        # Pre-populate topic Wikipedia article image pool (100% free & topic-verified)
         self._preload_topic_wikipedia_images()
 
     def _preload_topic_wikipedia_images(self):
@@ -130,22 +130,68 @@ class MediaFetcher:
         for art in articles[:5]:
             for item in self.archive_finder.fetch_wikipedia_article_images(art):
                 u = item.get("url", "")
-                if u and u not in seen and not ABSOLUTE_REJECT_PATTERNS.search(f"{item.get('title','')} {u}") and not DISQUALIFYING_PATTERNS.search(u):
+                t = item.get("title", "")
+                if (
+                    u
+                    and u not in seen
+                    and not ABSOLUTE_REJECT_PATTERNS.search(f"{t} {u}")
+                    and not DISQUALIFYING_PATTERNS.search(u)
+                ):
                     seen.add(u)
                     self.topic_article_images.append(item)
         print(f"[MediaFetcher] Preloaded {len(self.topic_article_images)} archival images from Wikipedia articles: {self.wikipedia_articles}")
 
     @staticmethod
+    def _compute_dhash(rgb_img: Image.Image) -> int:
+        """Computes a 64-bit perceptual difference hash (9x8 grayscale) to catch resized/cropped duplicate photos."""
+        small = rgb_img.convert("L").resize((9, 8), Image.Resampling.BILINEAR)
+        arr = np.asarray(small, dtype=np.int16)
+        diff = arr[:, 1:] > arr[:, :-1]
+        bits = 0
+        for b in diff.flatten():
+            bits = (bits << 1) | int(bool(b))
+        return bits
+
+    def _is_perceptual_duplicate(self, dhash: int, max_hamming: int = 14) -> bool:
+        for prev in self.used_dhashes:
+            if bin(dhash ^ prev).count("1") <= max_hamming:
+                return True
+        return False
+
+    @staticmethod
+    def _normalize_title_stem(title: str) -> str:
+        clean = re.sub(r"\.(jpg|jpeg|png|tif|tiff)$", "", title.lower().replace("file:", ""))
+        clean = re.sub(r"\b(cropped|detail|fragment|view|front|back|side|closeup|close-up|01|02|1|2|3)\b", "", clean)
+        tokens = [w for w in re.findall(r"[a-z]{4,}", clean)]
+        return " ".join(tokens[:4])
+
+    @staticmethod
     def _is_valid_photographic_image(rgb_img: Image.Image) -> bool:
+        """
+        Rejects blank/dark images AND flat computer diagrams/schematics (like white/gray background
+        technical drawings with neon lines).
+        """
         small = rgb_img.resize((200, 200), Image.Resampling.BILINEAR)
+        arr_rgb = np.asarray(small, dtype=np.float32)
         gray = np.asarray(small.convert("L"), dtype=np.float32)
         mean_l = float(gray.mean())
         std_l = float(gray.std())
-        if mean_l < 10.0 or std_l < 7.0:
+        if mean_l < 12.0 or std_l < 9.0:
             return False
-        white_ratio = float(np.mean(gray > 238.0))
-        if white_ratio > 0.82:
+
+        # Reject images with >48% near-white pixels (typical of diagrams, document scans, and schematics)
+        white_ratio = float(np.mean(gray > 232.0))
+        if white_ratio > 0.48:
             return False
+
+        # Reject flat-shaded diagrams/charts where 4 quantized color buckets cover >68% of the canvas
+        quant = (arr_rgb // 32).astype(np.int32)
+        codes = quant[:, :, 0] * 64 + quant[:, :, 1] * 8 + quant[:, :, 2]
+        _, counts = np.unique(codes, return_counts=True)
+        top4_share = float(np.sort(counts)[-4:].sum()) / float(codes.size)
+        if top4_share > 0.68:
+            return False
+
         return True
 
     @staticmethod
@@ -288,17 +334,17 @@ class MediaFetcher:
 
     def fetch_scene_asset(self, scene: dict, assets_dir: Path) -> Tuple[Path, str]:
         """
-        Scene-first retrieval pipeline:
-        1. Authentic Archival Motion Video Clip (if `prefer_media == 'video_clip'` or `video_query` matches)
-        2. Authentic Archival Photograph / Painting / Artifact (multi-archive search + Wikipedia article pool)
-        3. Budgeted `MAI-Image-2.6-Flash` AI Reconstruction (strictly capped at `self.max_ai_images`)
-        4. Distinct Archival Macro Crop from an earlier high-res photograph (counts as archival photo, never wastes AI credits)
-        5. Designed Editorial Graphic Plate (last resort)
+        v10.0 Scene-First Retrieval Pipeline:
+        1. If `prefer_media == 'ai_image'` and budget (`<= 10`) is available -> generate bespoke 9:16 `MAI-Image-2.6-Flash` shot FIRST!
+        2. If `prefer_media == 'video_clip'` -> search verified archival motion clips.
+        3. Search unique, non-duplicate, non-diagram historical photographs (with 64-bit dHash perceptual deduplication).
+        4. If no unique high-res archival photo passes quality & deduplication gates and AI budget remains -> generate `MAI-Image-2.6-Flash` shot!
+        5. Distinct quadrant macro crop or designed editorial dossier plate as final fallback.
         """
         assets_dir.mkdir(parents=True, exist_ok=True)
         scene_id = int(scene.get("scene_id", 1))
         narration = str(scene.get("narration", "")).strip()
-        prefer = str(scene.get("prefer_media", "archival"))
+        prefer = str(scene.get("prefer_media", "ai_image"))
         can_use_ai = self.ai_images_used < self.max_ai_images and bool(self.foundry_endpoint and self.foundry_key)
         subject = str(scene.get("visual_subject") or "").strip()
 
@@ -317,9 +363,28 @@ class MediaFetcher:
             queries = [" ".join(sorted(self._scene_terms(scene))[:5]) or self.topic]
 
         # ---------------------------------------------------------------------
-        # 1) Try Authentic Archival Video Clip (for up to ~4 scenes per Short)
+        # 1) Bespoke 9:16 MAI-Image-2.6-Flash First when `prefer == "ai_image"`
         # ---------------------------------------------------------------------
-        if (prefer == "video_clip" or scene_id in (2, 5, 8)) and self.video_clips_used < 4:
+        if prefer == "ai_image" and can_use_ai:
+            prompt = str(scene.get("image_prompt") or subject or narration)
+            ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
+            if ai_img:
+                self.ai_images_used += 1
+                self.ai_generated_images.append(ai_img)
+                self.downloaded_scene_images.append(ai_img)
+                self.scene_audit_log.append({
+                    "scene_id": scene_id,
+                    "kind": f"AI RECONSTRUCTION ({self.ai_images_used}/{self.max_ai_images})",
+                    "source": ai_img.name,
+                    "narration": narration,
+                    "source_url": "AI-generated; not archival",
+                })
+                return ai_img, "image"
+
+        # ---------------------------------------------------------------------
+        # 2) Try Authentic Archival Video Clip (when explicitly preferred)
+        # ---------------------------------------------------------------------
+        if prefer == "video_clip" and self.video_clips_used < 3:
             video_candidates: List[dict] = []
             for q in queries[:2]:
                 video_candidates.extend(self.archive_finder.search(q, "video", limit=6))
@@ -344,26 +409,7 @@ class MediaFetcher:
                     return saved, "video"
 
         # ---------------------------------------------------------------------
-        # 2) If scene explicitly requests `ai_image` AND budget is available, generate AI visual
-        # ---------------------------------------------------------------------
-        if prefer == "ai_image" and can_use_ai:
-            prompt = str(scene.get("image_prompt") or subject or narration)
-            ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
-            if ai_img:
-                self.ai_images_used += 1
-                self.ai_generated_images.append(ai_img)
-                self.downloaded_scene_images.append(ai_img)
-                self.scene_audit_log.append({
-                    "scene_id": scene_id,
-                    "kind": f"AI RECONSTRUCTION ({self.ai_images_used}/{self.max_ai_images})",
-                    "source": ai_img.name,
-                    "narration": narration,
-                    "source_url": "AI-generated; not archival",
-                })
-                return ai_img, "image"
-
-        # ---------------------------------------------------------------------
-        # 3) Search Multi-Archive Historical Photographs + Preloaded Wikipedia Pool
+        # 3) Search Multi-Archive Historical Photographs (Strict Deduplication & No Schematics)
         # ---------------------------------------------------------------------
         image_candidates: List[dict] = list(self.topic_article_images)
         scene_wp = str(scene.get("wikipedia_article") or "").strip()
@@ -376,8 +422,8 @@ class MediaFetcher:
         image_candidates = rank_candidates(image_candidates, scene)
         image_dest = assets_dir / f"scene_{scene_id:02d}_archive.jpg"
 
-        # First pass: strict relevance >= 2; Second pass: any valid topic-related archival image >= 1
-        for min_rel in (2, 1):
+        min_thresholds = (2,) if can_use_ai else (2, 1)
+        for min_rel in min_thresholds:
             for candidate in image_candidates:
                 if candidate.get("relevance_score", 0) < min_rel or candidate.get("url") in self.used_urls:
                     continue
@@ -404,7 +450,7 @@ class MediaFetcher:
                     return saved, "image"
 
         # ---------------------------------------------------------------------
-        # 4) Gap-Filler AI Image (only if archival search found nothing and budget remains)
+        # 4) Gap-Filler AI Image (whenever archival search found no unique photo and budget remains)
         # ---------------------------------------------------------------------
         if can_use_ai:
             prompt = str(scene.get("image_prompt") or subject or narration)
@@ -423,7 +469,7 @@ class MediaFetcher:
                 return ai_img, "image"
 
         # ---------------------------------------------------------------------
-        # 5) Distinct Archival Macro Crop (if we already downloaded archival photos in this Short)
+        # 5) Distinct Archival Macro Crop
         # ---------------------------------------------------------------------
         if self.downloaded_scene_images:
             src_photo = self.downloaded_scene_images[(scene_id - 1) % len(self.downloaded_scene_images)]
@@ -466,6 +512,11 @@ class MediaFetcher:
             return None
         if ABSOLUTE_REJECT_PATTERNS.search(f"{title} {img_url}") or DISQUALIFYING_PATTERNS.search(img_url):
             return None
+
+        title_stem = self._normalize_title_stem(title)
+        if title_stem and len(title_stem) >= 8 and title_stem in self.used_title_stems:
+            return None
+
         try:
             cache_key = hashlib.sha256(img_url.encode("utf-8")).hexdigest()
             cached_image = self.media_cache_dir / f"{cache_key}.jpg"
@@ -484,19 +535,27 @@ class MediaFetcher:
             dest_path.write_bytes(content_bytes)
             with Image.open(dest_path) as im:
                 w, h = im.size
-                if w < 380 or h < 300:
+                if w < 420 or h < 340:
                     dest_path.unlink(missing_ok=True)
                     return None
                 rgb = im.convert("RGB")
                 if not self._is_valid_photographic_image(rgb):
                     dest_path.unlink(missing_ok=True)
                     return None
-                rgb.save(dest_path, quality=94)
+                dhash = self._compute_dhash(rgb)
+                if self._is_perceptual_duplicate(dhash):
+                    dest_path.unlink(missing_ok=True)
+                    return None
+
+                rgb.save(dest_path, quality=95)
                 if cache_allowed and not cached_image.exists():
                     shutil.copy2(dest_path, cached_image)
 
             self.used_urls.add(img_url)
             self.used_hashes.add(digest)
+            self.used_dhashes.append(dhash)
+            if title_stem and len(title_stem) >= 8:
+                self.used_title_stems.add(title_stem)
             if title:
                 clean_title = title.replace("File:", "")
                 self.attributions.append(f"• {clean_title[:75]} ({license_name}) — {img_url}")
@@ -519,8 +578,9 @@ class MediaFetcher:
                 "Authorization": f"Bearer {self.foundry_key}",
             }
             clean_prompt = (
-                f"{prompt}, authentic historical documentary photography, dramatic chiaroscuro cinema lighting, "
-                "35mm Kodak archival film grain, vertical 9:16 composition, no text, no words, no watermarks"
+                f"{prompt}, ultra-sharp photorealistic historical documentary cinematography, dramatic rim lighting, "
+                "razor-sharp focus on subject, 35mm Kodak archival film look, vertical 9:16 portrait composition, "
+                "no blur, no text, no words, no watermarks"
             )
 
             route_attempts = [
@@ -552,7 +612,9 @@ class MediaFetcher:
                     else:
                         continue
                     with Image.open(dest_path) as im:
-                        im.convert("RGB").save(dest_path, quality=95)
+                        rgb = im.convert("RGB")
+                        self.used_dhashes.append(self._compute_dhash(rgb))
+                        rgb.save(dest_path, quality=96)
                     return dest_path
             return None
         except Exception as exc:
@@ -575,8 +637,8 @@ class MediaFetcher:
             ox, oy = quadrants[variant % len(quadrants)]
             cropped = rgb.crop((ox, oy, ox + crop_w, oy + crop_h))
             cropped = ImageEnhance.Contrast(cropped).enhance(1.12)
-            cropped = ImageEnhance.Color(cropped).enhance(0.82)
-            cropped.save(dest_path, quality=94)
+            cropped = ImageEnhance.Sharpness(cropped).enhance(1.15)
+            cropped.save(dest_path, quality=95)
 
     @staticmethod
     def _create_archival_fallback_card(dest_path: Path, scene: Optional[Dict[str, Any]] = None, topic: str = "US History"):
@@ -591,7 +653,6 @@ class MediaFetcher:
         d = ImageDraw.Draw(img)
         gold = (220, 174, 88)
         pale = (237, 239, 239)
-        muted = (151, 166, 178)
 
         def font(size: int, bold: bool = False):
             paths = [
