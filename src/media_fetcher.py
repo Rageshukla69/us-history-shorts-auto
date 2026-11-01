@@ -22,8 +22,10 @@ import requests
 
 try:
     from archive_media import ArchiveMediaFinder, rank_candidates
+    from comfyui_client import ComfyUIVideoClient
 except ImportError:
     from src.archive_media import ArchiveMediaFinder, rank_candidates
+    from src.comfyui_client import ComfyUIVideoClient
 
 USER_AGENT = (
     "USHistoryShortsBot/10.0 "
@@ -109,7 +111,9 @@ class MediaFetcher:
             self.max_ai_images = 10
 
         self.ai_images_used = 0
+        self.comfy_videos_used = 0
         self.video_clips_used = 0
+        self.comfy_client = ComfyUIVideoClient()
         self.archival_photos_used = 0
         self.reframed_cuts_used = 0
         self.used_urls: Set[str] = set()
@@ -377,6 +381,28 @@ class MediaFetcher:
                 self.ai_images_used += 1
                 self.ai_generated_images.append(ai_img)
                 self.downloaded_scene_images.append(ai_img)
+                # If ComfyUI GPU server is connected (on Kaggle GPU or via COMFYUI_API_URL), animate the keyframe into a realistic video clip!
+                motion_prompt = str(scene.get("motion_prompt") or prompt)
+                dur_s = float(scene.get("duration_sec", 4.5))
+                comfy_mp4 = assets_dir / f"scene_{scene_id:02d}_comfy.mp4"
+                animated = self.comfy_client.animate_keyframe_to_video(
+                    keyframe_path=ai_img,
+                    motion_prompt=motion_prompt,
+                    duration_sec=dur_s,
+                    dest_mp4=comfy_mp4,
+                )
+                if animated:
+                    self.comfy_videos_used += 1
+                    self.video_clips_used += 1
+                    self.scene_audit_log.append({
+                        "scene_id": scene_id,
+                        "kind": f"COMFYUI AI VIDEO ({self.comfy_videos_used}/{self.comfy_client.max_clips}) + MAI KEYFRAME",
+                        "source": animated.name,
+                        "narration": narration,
+                        "source_url": "ComfyUI I2V + MAI-Image-2.6-Flash",
+                    })
+                    return animated, "video"
+
                 self.scene_audit_log.append({
                     "scene_id": scene_id,
                     "kind": f"AI RECONSTRUCTION ({self.ai_images_used}/{self.max_ai_images})",
