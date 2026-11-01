@@ -1,4 +1,4 @@
-name: Automated US History Shorts (Every 12 Hours)
+name: Automated US History Shorts (Every 12 Hours — HyperFrames + 10 MAI Images)
 
 on:
   schedule:
@@ -11,9 +11,13 @@ on:
         required: false
         default: ''
       max_ai_images:
-        description: 'Maximum paid AI images per Short (default 2 as gap-filler; 0 disables paid AI images)'
+        description: 'Maximum MAI-Image-2.6-Flash images per Short (default 10 for cinema quality)'
         required: false
-        default: '2'
+        default: '10'
+      render_engine:
+        description: 'Video rendering engine (hyperframes = HTML/GSAP/Shader + FFmpeg hybrid, ffmpeg = direct FFmpeg)'
+        required: false
+        default: 'hyperframes'
       dry_run:
         description: 'Skip YouTube upload (true = render preview only, false = publish to YouTube)'
         required: false
@@ -45,10 +49,19 @@ jobs:
           restore-keys: |
             history-media-${{ runner.os }}-
 
-      - name: Set up System Dependencies (FFmpeg & Fonts)
+      - name: Set up System Dependencies (FFmpeg, Fonts & Chromium Headless Deps)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-montserrat fonts-liberation fonts-dejavu-core libmagic1
+          sudo apt-get install -y ffmpeg fonts-montserrat fonts-liberation fonts-dejavu-core libmagic1 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2t64 || sudo apt-get install -y ffmpeg fonts-montserrat fonts-liberation fonts-dejavu-core libmagic1
+
+      - name: Set up Node.js 22 for HyperFrames Engine
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install HyperFrames CLI Engine
+        run: |
+          npm install --no-audit --no-fund || npm install -g hyperframes || true
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -69,7 +82,7 @@ jobs:
         run: |
           python src/sfx_generator.py
 
-      - name: Run End-to-End History Short Pipeline
+      - name: Run End-to-End History Short Pipeline (HyperFrames + 10 MAI Images)
         env:
           AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
           AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION || 'centralindia' }}
@@ -79,7 +92,8 @@ jobs:
           FOUNDRY_API_KEY: ${{ secrets.FOUNDRY_API_KEY }}
           FOUNDRY_ENDPOINT: ${{ secrets.FOUNDRY_ENDPOINT }}
           FOUNDRY_IMAGE_MODEL: ${{ secrets.FOUNDRY_IMAGE_MODEL || 'MAI-Image-2.6-Flash' }}
-          MAX_AI_IMAGES_PER_SHORT: ${{ github.event.inputs.max_ai_images || vars.MAX_AI_IMAGES_PER_SHORT || secrets.MAX_AI_IMAGES_PER_SHORT || '2' }}
+          MAX_AI_IMAGES_PER_SHORT: ${{ github.event.inputs.max_ai_images || vars.MAX_AI_IMAGES_PER_SHORT || secrets.MAX_AI_IMAGES_PER_SHORT || '10' }}
+          RENDER_ENGINE: ${{ github.event.inputs.render_engine || vars.RENDER_ENGINE || 'hyperframes' }}
           FOUNDRY_TEXT_API_KEY: ${{ secrets.FOUNDRY_TEXT_API_KEY }}
           FOUNDRY_TEXT_ENDPOINT: ${{ secrets.FOUNDRY_TEXT_ENDPOINT }}
           FOUNDRY_TEXT_MODEL: ${{ secrets.FOUNDRY_TEXT_MODEL || 'gpt-6-luna' }}
@@ -90,14 +104,14 @@ jobs:
           NARA_API_KEY: ${{ secrets.NARA_API_KEY }}
           YOUTUBE_PRIVACY_STATUS: ${{ secrets.YOUTUBE_PRIVACY_STATUS || 'public' }}
           MEDIA_CACHE_DIR: .cache/media
-          MIN_AUTHENTIC_MEDIA_RATIO: ${{ vars.MIN_AUTHENTIC_MEDIA_RATIO || '0.25' }}
+          MIN_AUTHENTIC_MEDIA_RATIO: ${{ vars.MIN_AUTHENTIC_MEDIA_RATIO || '0.20' }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           CUSTOM_TOPIC: ${{ github.event.inputs.custom_topic }}
           DRY_RUN: ${{ github.event.inputs.dry_run || secrets.DRY_RUN || 'false' }}
         run: |
           python src/main.py
 
-      - name: Upload Rendered Short as Workflow Artifact (Preview / Backup)
+      - name: Upload Rendered Short & HyperFrames Composition Bundle as Workflow Artifact
         uses: actions/upload-artifact@v4
         if: always() && hashFiles('output/final_short.mp4') != ''
         with:
@@ -107,6 +121,9 @@ jobs:
             output/subtitles.ass
             output/metadata.json
             output/quality_report.json
+            output/hyperframes_project/index.html
+            output/hyperframes_project/preview.html
+            output/hyperframes_project/DESIGN.md
           retention-days: 7
 
       - name: Commit Updated Topic Queue & History State (Backup Sync)
