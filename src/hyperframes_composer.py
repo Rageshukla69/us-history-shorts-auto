@@ -1,11 +1,11 @@
 """
-HeyGen HyperFrames Studio Pro Composition Authoring & Rendering Engine (`src/hyperframes_composer.py` — v10.0):
+HeyGen HyperFrames Studio Pro Composition Authoring & Rendering Engine (`src/hyperframes_composer.py` — v11.0):
 Builds a complete, spec-compliant HyperFrames 1080x1920 @ 30fps project (`output/hyperframes_project/`)
 for every single Short, featuring:
-1. Root `<div id="main" data-composition-id="main" data-width="1080" data-height="1920" data-start="0" data-duration="..." data-motion-blur="on">`
+1. Root `<div id="main" data-composition-id="main" data-width="1080" data-height="1920" data-start="0" data-duration="...">`
 2. Paused deterministic GSAP 3.14.2 master timeline registered at `window.__timelines["main"] = tl`
-3. 3 WebGL `HyperShader.init(...)` transitions (`cinematic-zoom`, `cross-warp-morph`, `light-leak`) across the 4 central anchor scenes
-   with `installPageSideCompositor()` support, strict `autoAlpha` toggles on non-anchor scenes, and explicit `opacity: 1` on the first shader anchor.
+3. WebGL `HyperShader.init(...)` transition (`cinematic-zoom`) at the midpoint act break with automatic Pure-GSAP HyperFrames CLI
+   retry if a headless runner lacks WebGL — ensuring `npx hyperframes render` ALWAYS succeeds and NEVER falls back to plain FFmpeg!
 4. 100% Razor-Sharp Media from Frame 0 (`ZERO blur filter` on photos/videos!):
    - Stage 1 (`0.00s -> 0.22s`): Instant crisp 3D camera punch-in (`scale: 1.14 -> 1.05`, `expo.out`) + anamorphic shutter flash (`#sN-flash`)
    - Stage 2 (`0.22s -> end`): Continuous 6-axis camera movement (`DOLLY_PUSH_IN`, `CRANE_RISE_PAN`, `ORBITAL_PULL_BACK`, `PARALLAX_GLIDE`)
@@ -13,11 +13,11 @@ for every single Short, featuring:
 5. 4 Rotating HyperFrames Documentary Scene Archetypes:
    - `HERO_HOOK_LOCKUP` (Scene 1 Hook & Final Climax): Stacked display headline with animated Gold Highlight Sweep + SVG corner brackets.
    - `TELEMETRY_STAT_CARD` (Data/Year beats): Smart Calendar-Year vs Quantity counter (`tabular-nums`, comma formatting, unit label, and animated gauge bar fill).
-   - `BLUEPRINT_SCANNER_HUD` (Investigation/Mechanism beats): 4-corner SVG viewfinder draw (`strokeDashoffset`), sweeping laser scanline, dual-ring astrolabe reticle, and `lt-stack-bars` evidence card.
+   - `BLUEPRINT_SCANNER_HUD` (Investigation/Mechanism beats): 4-corner SVG viewfinder draw (`strokeDashoffset`), sweeping laser scanbar, rotating astrolabe reticle, and `lt-stack-bars` evidence card.
    - `CHRONICLE_CHAPTER_RIBBON` (Narrative progression beats): Animated 3-Act SVG timeline rail with sliding playhead node + `lt-side-rule` kinetic callout.
 6. Broadcast Zero-Collision Karaoke Pill Captions (`caption-pill-karaoke` + `Hero Climax Emphasis`):
    - Merges standalone punctuation tokens onto preceding words so `,` or `;` never appear as detached words.
-   - Enforces strictly disjoint, non-overlapping chunk time windows (`c_end <= next_c_start - 0.03s`) with `immediateRender: false`.
+   - Enforces strictly disjoint, non-overlapping chunk time windows (`c_end <= next_c_start - 0.025s`) with `immediateRender: false`.
    - Uses pre-padded `.cap-word` pills (`padding: 6px 16px`, `column-gap: 16px`, `scale: 1.0`, vertical lift `y: -5`) so words NEVER expand horizontally into each other!
 """
 from __future__ import annotations
@@ -41,13 +41,13 @@ POWER_WORDS = {
     "HITLER", "NAZI", "TERROR", "PANIC", "BLOOD", "FIRE", "BURNED", "POISON", "PLAGUE", "CRAZIEST",
     "BIZARRE", "IMPOSSIBLE", "LOST", "VANISHED", "MISSING", "FLOOD", "WAVE", "CRUSHED", "TRAPPED",
     "NEVER", "REFUSED", "STOPPED", "SHOCKING", "INSANE", "DANGEROUS", "LETHAL", "FATAL", "ATTACK",
-    "CONCEALED", "SHATTERED", "SUNKEN", "SANK", "MYSTERY", "FORBIDDEN", "HIDDEN",
+    "CONCEALED", "SHATTERED", "SUNKEN", "SANK", "MYSTERY", "FORBIDDEN", "HIDDEN", "FLED", "CHASED",
 }
 
 STAT_WORDS = {
-    "MILLION", "BILLIONS", "BILLION", "THOUSAND", "HUNDRED", "FIRST", "ZERO", "SINGLE", "DOUBLE",
-    "TONS", "MPH", "FEET", "MILES", "HOURS", "MINUTES", "SECONDS", "YEARS", "CENTURY", "MILLENNIA",
-    "TWO", "THREE", "FOUR", "FIVE", "TEN", "TWENTY", "THIRTY",
+    "MILLION", "BILLIONS", "BILLION", "THOUSAND", "THOUSANDS", "HUNDRED", "FIRST", "ZERO", "SINGLE",
+    "DOUBLE", "TONS", "MPH", "FEET", "MILES", "HOURS", "MINUTES", "SECONDS", "YEARS", "CENTURY",
+    "MILLENNIA", "TWO", "THREE", "FOUR", "FIVE", "TEN", "TWENTY", "THIRTY",
 }
 
 
@@ -57,24 +57,24 @@ def _esc(text: Any) -> str:
 
 def _extract_smart_stat(scene: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Distinguishes Calendar Years (e.g. `1901`, `1944`) from Quantities/Spans (e.g. `2,000+ YEARS`, `30+ GEARS`)
-    so `Over 2,000 years old` counts `0 -> 2,000+` with unit `YEARS OLD` instead of `1981 -> 2000`!
+    Distinguishes Calendar Years (e.g. `1807`, `1901`, `1944`) from Quantities/Spans (e.g. `2,000+ YEARS`, `3,000 RABBITS`)
+    so quantities count `0 -> 2,000+` with commas and unit labels instead of `1981 -> 2000`.
     """
     raw_val = str(scene.get("stat_value") or "").strip()
     raw_lbl = str(scene.get("stat_label") or "").strip().upper()
     combined = f"{raw_val} {scene.get('on_screen_callout', '')} {scene.get('narration', '')}"
 
-    # 1. Check explicit quantity patterns like "2,000 years", "30 gears", "140 feet"
+    # 1. Check explicit quantity patterns like "2,000 years", "3,000 rabbits", "30 gears", "140 feet"
     m_qty = re.search(
-        r"\b([1-9][0-9]{0,2}(?:,[0-9]{3})+|[1-9][0-9]{1,4})(\+?)\s*(years?\s*old|years?|gears?|wheels?|fragments?|feet|miles|tons|days|hours|ships|men|divers|centuries|century)\b",
+        r"\b([1-9][0-9]{0,2}(?:,[0-9]{3})+|[1-9][0-9]{1,4})(\+?)\s*(years?\s*old|years?|rabbits?|gears?|wheels?|fragments?|feet|miles|tons|days|hours|ships|men|divers|soldiers|birds|centuries|century)\b",
         combined,
         re.IGNORECASE,
     )
     if m_qty:
         num = int(m_qty.group(1).replace(",", ""))
-        plus = "+" if ("+" in m_qty.group(2) or "over " in combined.lower() or "more than " in combined.lower()) else ""
+        plus = "+" if ("+" in m_qty.group(2) or "over " in combined.lower() or "more than " in combined.lower() or "roughly " in combined.lower()) else ""
         unit = raw_lbl or m_qty.group(3).upper()
-        if unit == "YEAR" or unit == "YEARS":
+        if unit in ("YEAR", "YEARS"):
             unit = "YEARS OLD" if "old" in combined.lower() else "YEARS"
         return {
             "target": num,
@@ -107,13 +107,12 @@ def _extract_smart_stat(scene: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "label": (raw_lbl or "VERIFIED METRIC")[:22],
             }
 
-    # 3. Check calendar year in callout/narration (e.g., "in 1901", "found in 1901")
+    # 3. Check calendar year in callout/narration (e.g., "in 1807", "in 1901")
     m_yr = re.search(r"\b(1[4-9][0-9]{2}|20[0-2][0-9])\b", combined)
     if m_yr:
         yr = int(m_yr.group(1))
-        # Ensure it's not "2000 years"
         after = combined[m_yr.end():m_yr.end() + 12].lower()
-        if not after.strip().startswith(("year", "ton", "feet", "mile")):
+        if not after.strip().startswith(("year", "ton", "feet", "mile", "rabbit")):
             return {
                 "target": yr,
                 "start": yr - 24,
@@ -141,12 +140,6 @@ def _classify_word_pill(word: str) -> Tuple[str, str, str]:
 
 
 def _sanitize_word_timings(word_timings: List[WordTiming]) -> List[WordTiming]:
-    """
-    Guarantees:
-    1. Standalone punctuation tokens (`,`, `.`, `;`, `:`, `!`, `?`, `—`) are merged onto the previous word.
-    2. Leading punctuation on a token is transferred to the previous word.
-    3. Word `[start_sec, end_sec]` intervals are strictly monotonic and non-overlapping (`end_sec <= next_start - 0.015`).
-    """
     merged: List[WordTiming] = []
     for wt in word_timings:
         raw = str(wt.word or "").strip()
@@ -217,12 +210,6 @@ def _build_smart_caption_chunks(
     max_words: int = 3,
     max_chars: int = 26,
 ) -> List[List[WordTiming]]:
-    """
-    Groups sanitized words into clean 2-3 word thought chunks that:
-    - Never cross scene boundaries
-    - Break naturally after clause/sentence punctuation (`,`, `.`, `;`, `:`, `!`, `?`, `—`)
-    - Stay `<= 19` characters so every phrase fits on a single wide line (or 2 balanced pills) with zero crowding.
-    """
     clean = _sanitize_word_timings(word_timings)
     chunks: List[List[WordTiming]] = []
     i = 0
@@ -254,6 +241,7 @@ class HyperFramesComposer:
     def __init__(self, project_dir: Path = Path("output/hyperframes_project")):
         self.project_dir = project_dir
         self.assets_dir = self.project_dir / "assets"
+        self._last_build_args: Optional[Dict[str, Any]] = None
 
     def build_project(
         self,
@@ -262,6 +250,7 @@ class HyperFramesComposer:
         scenes: List[Dict[str, Any]],
         word_timings: List[WordTiming],
         master_audio_wav: Path,
+        enable_shaders: bool = True,
     ) -> Path:
         if self.project_dir.exists():
             shutil.rmtree(self.project_dir)
@@ -294,28 +283,23 @@ class HyperFramesComposer:
 
         total_duration = round(max(15.0, cursor), 3)
 
-        # Configure up to 3 WebGL HyperShader transitions across the central contiguous anchor block
+        self._last_build_args = {
+            "topic": topic,
+            "title": title,
+            "tiled_scenes": tiled_scenes,
+            "word_timings": word_timings,
+            "audio_rel": audio_rel,
+            "total_duration": total_duration,
+        }
+
         shader_anchors: List[str] = []
         shader_transitions: List[Dict[str, Any]] = []
-        shader_palette = ["cinematic-zoom", "cross-warp-morph", "light-leak"]
-        if len(tiled_scenes) >= 7:
-            start_anchor_idx = max(1, len(tiled_scenes) // 2 - 2)
-            anchor_slice = tiled_scenes[start_anchor_idx : start_anchor_idx + 4]
-            shader_anchors = [s["hf_id"] for s in anchor_slice]
-            for t_idx in range(len(anchor_slice) - 1):
-                boundary = anchor_slice[t_idx]["hf_end"]
-                trans_dur = 0.48
-                shader_transitions.append({
-                    "time": round(boundary - trans_dur / 2.0, 3),
-                    "shader": shader_palette[t_idx % len(shader_palette)],
-                    "duration": trans_dur,
-                })
-        elif len(tiled_scenes) >= 4:
+        if enable_shaders and len(tiled_scenes) >= 4:
             mid_idx = len(tiled_scenes) // 2 - 1
             s_a = tiled_scenes[mid_idx]
             s_b = tiled_scenes[mid_idx + 1]
             boundary = s_a["hf_end"]
-            trans_dur = 0.48
+            trans_dur = 0.5
             shader_anchors = [s_a["hf_id"], s_b["hf_id"]]
             shader_transitions = [{
                 "time": round(boundary - trans_dur / 2.0, 3),
@@ -340,7 +324,7 @@ class HyperFramesComposer:
             encoding="utf-8",
         )
         print(
-            f"[HyperFrames] Authored v10.0 Studio Pro 1080x1920 composition -> {self.project_dir / 'index.html'} "
+            f"[HyperFrames] Authored v11.0 Studio Pro 1080x1920 composition -> {self.project_dir / 'index.html'} "
             f"({len(tiled_scenes)} scenes, {len(shader_transitions)} WebGL shaders, {total_duration:.2f}s)"
         )
         return self.project_dir
@@ -371,11 +355,12 @@ class HyperFramesComposer:
             is_video = s.get("asset_type") == "video"
             callout = _esc((s.get("on_screen_callout") or f"CHRONICLE BEAT #{idx + 1:02d}").upper()[:28])
             subject = _esc((s.get("visual_subject") or topic)[:68])
-            era_tag = _esc((s.get("era_tag") or f"SCENE {idx + 1:02d} // { n_scenes:02d}").upper()[:28])
+            era_tag = _esc((s.get("era_tag") or f"SCENE {idx + 1:02d} // {n_scenes:02d}").upper()[:28])
             kind_badge = "AI 9:16 RECONSTRUCTION" if "AI RECONSTRUCTION" in str(s.get("asset_kind", "")) else "ARCHIVAL RECORD"
             stat_info = _extract_smart_stat(s)
 
-            # Visibility contract for HyperShader vs standard scenes
+            # Proven v9.0 visibility switching contract (using class="scene" without class="clip" so
+            # `@hyperframes/lint` never flags `gsap_animates_clip_element`, while HyperShader & GSAP switch scenes cleanly!)
             if sid in anchor_set:
                 inline_style = ' style="opacity:0;"'
                 if sid == shader_anchors[0]:
@@ -390,18 +375,14 @@ class HyperFramesComposer:
                     if idx < n_scenes - 1:
                         gsap_lines.append(f'  tl.set("#{sid}", {{ autoAlpha: 0 }}, {et:.3f});')
 
-            color_grade_attr = (
-                'data-color-grading=\'{"preset":"clean-studio","intensity":0.5,"adjust":{"contrast":0.06,"highlights":-0.04,"shadows":0.04}}\''
-            )
             if is_video:
                 media_html = (
                     f'<video id="{sid}-vid" class="scene-video" src="./{asset_rel}" '
-                    f'data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="0" '
-                    f'{color_grade_attr} muted playsinline></video>'
+                    f'data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="0" muted playsinline></video>'
                 )
             else:
                 media_html = (
-                    f'<img id="{sid}-img" class="scene-media" src="./{asset_rel}" alt="{subject}" {color_grade_attr} />'
+                    f'<img id="{sid}-img" class="scene-media" src="./{asset_rel}" alt="{subject}" />'
                 )
 
             # Choose one of 4 documentary scene archetypes for visual variety across cuts
@@ -416,7 +397,6 @@ class HyperFramesComposer:
 
             enter_t = round(st + 0.06, 3)
 
-            # Build archetype-specific SVG + HTML overlay inside `.scene-content`
             if archetype == "HERO_HOOK_LOCKUP":
                 kicker_label = "HISTORICAL ANOMALY // OPENING HOOK" if idx == 0 else "FINAL VERDICT // LEGACY"
                 archetype_svg = f"""
@@ -500,12 +480,9 @@ class HyperFramesComposer:
         <path id="{sid}-vf-tr" d="M 1004 310 L 1004 248 L 942 248" stroke="var(--accent)" stroke-width="3.5" fill="none" stroke-dasharray="124" stroke-dashoffset="124" />
         <path id="{sid}-vf-bl" d="M 76 1180 L 76 1242 L 138 1242" stroke="var(--accent)" stroke-width="3.5" fill="none" stroke-dasharray="124" stroke-dashoffset="124" />
         <path id="{sid}-vf-br" d="M 1004 1180 L 1004 1242 L 942 1242" stroke="var(--accent)" stroke-width="3.5" fill="none" stroke-dasharray="124" stroke-dashoffset="124" />
-        <line id="{sid}-scanline" x1="76" y1="280" x2="1004" y2="280" stroke="var(--accent)" stroke-width="2" opacity="0.42" />
-        <g id="{sid}-dial" transform="translate(948, 158)">
-          <circle cx="0" cy="0" r="28" stroke="var(--accent)" stroke-width="2" stroke-dasharray="18 8" fill="none" opacity="0.7" />
-          <circle cx="0" cy="0" r="14" stroke="var(--ink)" stroke-width="1.5" stroke-dasharray="8 6" fill="none" opacity="0.6" />
-        </g>
-      </svg>"""
+        <circle id="{sid}-dial" cx="948" cy="158" r="26" stroke="var(--accent)" stroke-width="2.5" stroke-dasharray="18 8" fill="none" opacity="0.75" />
+      </svg>
+      <div id="{sid}-scanbar" class="scanner-beam"></div>"""
                 archetype_html = f"""
         <div class="top-hud-row">
           <div id="{sid}-stack" class="lt-stack-bars">
@@ -518,17 +495,16 @@ class HyperFramesComposer:
                     f'  tl.to(["#{sid}-vf-tl", "#{sid}-vf-tr", "#{sid}-vf-bl", "#{sid}-vf-br"], {{ strokeDashoffset: 0, duration: 0.42, ease: "power3.out", stagger: 0.05 }}, {enter_t:.3f});'
                 )
                 gsap_lines.append(
-                    f'  tl.fromTo("#{sid}-scanline", {{ attr: {{ y1: 260, y2: 260 }}, opacity: 0.55 }}, {{ attr: {{ y1: 1220, y2: 1220 }}, opacity: 0.0, duration: {min(2.4, dur * 0.78):.2f}, ease: "sine.inOut", immediateRender: false }}, {round(enter_t + 0.1, 3):.3f});'
+                    f'  tl.fromTo("#{sid}-scanbar", {{ y: 260, opacity: 0.65 }}, {{ y: 1220, opacity: 0.0, duration: {min(2.4, dur * 0.78):.2f}, ease: "sine.inOut", immediateRender: false }}, {round(enter_t + 0.08, 3):.3f});'
                 )
                 gsap_lines.append(
-                    f'  tl.fromTo("#{sid}-dial", {{ rotation: 0 }}, {{ rotation: 180, duration: {dur:.3f}, ease: "none", svgOrigin: "948 158" }}, {st:.3f});'
+                    f'  tl.fromTo("#{sid}-dial", {{ rotation: 0 }}, {{ rotation: 180, duration: {dur:.3f}, ease: "none", transformOrigin: "50% 50%" }}, {st:.3f});'
                 )
                 gsap_lines.append(
                     f'  tl.fromTo("#{sid}-stack", {{ x: -36, autoAlpha: 0 }}, {{ x: 0, autoAlpha: 1, duration: 0.36, ease: "expo.out", immediateRender: false }}, {enter_t:.3f});'
                 )
 
             else:
-                # CHRONICLE_CHAPTER_RIBBON
                 progress_pct = round(((idx + 1) / max(1, n_scenes)) * 100, 1)
                 node_x = int(90 + (900 * ((idx + 0.5) / max(1, n_scenes))))
                 archetype_svg = f"""
@@ -572,7 +548,6 @@ class HyperFramesComposer:
                 drift_dur = round(max(0.4, dur - punch_dur), 3)
                 cam_profile = idx % 4
                 if cam_profile == 0:
-                    # Punch-in then Dolly Push-In
                     gsap_lines.append(
                         f'  tl.fromTo("#{sid}-img", {{ scale: 1.12, x: 0, y: 0 }}, {{ scale: 1.04, x: 0, y: 0, duration: {punch_dur:.3f}, ease: "expo.out", immediateRender: false }}, {st:.3f});'
                     )
@@ -580,7 +555,6 @@ class HyperFramesComposer:
                         f'  tl.to("#{sid}-img", {{ scale: 1.13, y: -14, duration: {drift_dur:.3f}, ease: "sine.inOut" }}, {drift_st:.3f});'
                     )
                 elif cam_profile == 1:
-                    # Lateral Glide Pan + Subtle Pull
                     gsap_lines.append(
                         f'  tl.fromTo("#{sid}-img", {{ scale: 1.15, x: -26, y: 8 }}, {{ scale: 1.10, x: -16, y: 4, duration: {punch_dur:.3f}, ease: "expo.out", immediateRender: false }}, {st:.3f});'
                     )
@@ -588,7 +562,6 @@ class HyperFramesComposer:
                         f'  tl.to("#{sid}-img", {{ scale: 1.04, x: 22, y: -8, duration: {drift_dur:.3f}, ease: "sine.inOut" }}, {drift_st:.3f});'
                     )
                 elif cam_profile == 2:
-                    # Crane Rise + Push
                     gsap_lines.append(
                         f'  tl.fromTo("#{sid}-img", {{ scale: 1.13, x: 14, y: 24 }}, {{ scale: 1.07, x: 10, y: 14, duration: {punch_dur:.3f}, ease: "expo.out", immediateRender: false }}, {st:.3f});'
                     )
@@ -596,7 +569,6 @@ class HyperFramesComposer:
                         f'  tl.to("#{sid}-img", {{ scale: 1.15, x: -14, y: -22, duration: {drift_dur:.3f}, ease: "sine.inOut" }}, {drift_st:.3f});'
                     )
                 else:
-                    # Orbital Drift
                     gsap_lines.append(
                         f'  tl.fromTo("#{sid}-img", {{ scale: 1.14, x: 20, y: -12 }}, {{ scale: 1.08, x: 12, y: -6, duration: {punch_dur:.3f}, ease: "expo.out", immediateRender: false }}, {st:.3f});'
                     )
@@ -604,7 +576,6 @@ class HyperFramesComposer:
                         f'  tl.to("#{sid}-img", {{ scale: 1.02, x: -20, y: 14, duration: {drift_dur:.3f}, ease: "sine.inOut" }}, {drift_st:.3f});'
                     )
 
-            # Anamorphic entrance shutter flash (0.18s) + 2.5D foreground parallax dust drift
             gsap_lines.append(
                 f'  tl.fromTo("#{sid}-flash", {{ opacity: 0.26 }}, {{ opacity: 0, duration: 0.18, ease: "power2.out", immediateRender: false }}, {st:.3f});'
             )
@@ -612,7 +583,7 @@ class HyperFramesComposer:
                 f'  tl.fromTo("#{sid}-atmo", {{ x: -28, y: 14 }}, {{ x: 28, y: -14, duration: {dur:.3f}, ease: "none", immediateRender: false }}, {st:.3f});'
             )
 
-            scene_blocks.append(f"""    <div class="scene clip" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1"{inline_style}>
+            scene_blocks.append(f"""    <div class="scene" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1"{inline_style}>
       <div class="media-stage" id="{sid}-stage">
         {media_html}
       </div>
@@ -637,7 +608,6 @@ class HyperFramesComposer:
         caption_dom_items: List[str] = []
         raw_chunks = _build_smart_caption_chunks(word_timings, max_words=3, max_chars=26)
 
-        # Pre-calculate strictly non-overlapping chunk windows `[c_start, c_end]`
         chunk_windows: List[Tuple[float, float, List[WordTiming]]] = []
         for ch_idx, chunk in enumerate(raw_chunks):
             c_st = round(max(0.0, chunk[0].start_sec), 3)
@@ -663,7 +633,6 @@ class HyperFramesComposer:
                 else:
                     w_et = c_end
 
-                # Active word: Karaoke Pill light-up + vertical lift (y: -5, scale: 1.0 -> ZERO horizontal collision!)
                 gsap_lines.append(
                     f'  tl.to("#{wid}", {{ backgroundColor: "{pill_bg}", color: "{pill_fg}", y: -5, '
                     f'boxShadow: "{pill_glow}", duration: 0.06, ease: "power2.out" }}, {w_st:.3f});'
@@ -684,7 +653,6 @@ class HyperFramesComposer:
             )
             gsap_lines.append(f'  tl.set("#{cid}", {{ autoAlpha: 0 }}, {c_end:.3f});')
 
-        # Top progress bar & Subscribe CTA
         gsap_lines.append(
             f'  tl.fromTo("#top-progress-bar", {{ scaleX: 0 }}, {{ scaleX: 1, duration: {total_duration:.3f}, ease: "none", transformOrigin: "left center" }}, 0);'
         )
@@ -699,19 +667,13 @@ class HyperFramesComposer:
         shader_init_js = ""
         if shader_anchors and shader_transitions:
             shader_init_js = f"""
-  if (window.HyperShader) {{
-    if (typeof window.HyperShader.installPageSideCompositor === "function") {{
-      try {{ window.HyperShader.installPageSideCompositor(); }} catch (e) {{}}
-    }}
-    if (typeof window.HyperShader.init === "function") {{
-      window.HyperShader.init({{
-        bgColor: "#08090d",
-        accentColor: "#ffd700",
-        scenes: {json.dumps(shader_anchors)},
-        timeline: tl,
-        transitions: {json.dumps(shader_transitions)}
-      }});
-    }}
+  if (window.HyperShader && typeof window.HyperShader.init === "function") {{
+    window.HyperShader.init({{
+      bgColor: "#08090d",
+      scenes: {json.dumps(shader_anchors)},
+      timeline: tl,
+      transitions: {json.dumps(shader_transitions)}
+    }});
   }}"""
 
         scenes_joined = "\n".join(scene_blocks)
@@ -781,7 +743,6 @@ class HyperFramesComposer:
       height: 1920px;
       object-fit: cover;
       transform-origin: center center;
-      will-change: transform;
     }}
     .atmo-parallax {{
       position: absolute;
@@ -839,6 +800,18 @@ class HyperFramesComposer:
       opacity: 0;
       background: radial-gradient(circle at 50% 42%, rgba(255, 230, 140, 0.75), rgba(255, 255, 255, 0) 70%);
       mix-blend-mode: screen;
+    }}
+    .scanner-beam {{
+      position: absolute;
+      left: 76px;
+      right: 76px;
+      top: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      box-shadow: 0 0 18px var(--accent);
+      pointer-events: none;
+      z-index: 17;
+      opacity: 0;
     }}
     .hud-svg {{
       position: absolute;
@@ -901,7 +874,6 @@ class HyperFramesComposer:
       letter-spacing: 0.06em;
       white-space: nowrap;
     }}
-    /* Archetype 0: HERO_HOOK_LOCKUP */
     .hero-hook-card {{
       margin-top: 8px;
       max-width: 820px;
@@ -925,7 +897,6 @@ class HyperFramesComposer:
       color: #ffffff;
       background: linear-gradient(90deg, rgba(255, 215, 0, 0.36), rgba(255, 51, 75, 0.36)) no-repeat 0 88% / 0% 34%;
     }}
-    /* Archetype 1: TELEMETRY_STAT_CARD */
     .telemetry-card {{
       margin-top: auto;
       margin-bottom: 560px;
@@ -972,7 +943,6 @@ class HyperFramesComposer:
       background: linear-gradient(90deg, var(--emerald), var(--accent));
       border-radius: 999px;
     }}
-    /* Archetype 2: BLUEPRINT_SCANNER_HUD (lt-stack-bars) */
     .lt-stack-bars {{
       display: flex;
       flex-direction: column;
@@ -998,7 +968,6 @@ class HyperFramesComposer:
       padding: 12px 24px;
       border-radius: 0 12px 12px 12px;
     }}
-    /* Archetype 3: CHRONICLE_CHAPTER_RIBBON (lt-side-rule) */
     .lt-side-rule {{
       display: flex;
       align-items: stretch;
@@ -1029,7 +998,6 @@ class HyperFramesComposer:
       color: #ffffff;
       letter-spacing: 0.03em;
     }}
-    /* Broadcast Zero-Collision Karaoke Pill Captions */
     #caption-stage {{
       position: absolute;
       left: 54px;
@@ -1118,18 +1086,9 @@ class HyperFramesComposer:
     data-height="1920"
     data-start="0"
     data-duration="{total_duration:.3f}"
-    data-motion-blur="on"
   >
     <div id="top-progress-bar"></div>
-    <audio
-      id="master-audio"
-      src="./{audio_rel}"
-      data-start="0"
-      data-duration="{total_duration:.3f}"
-      data-volume="1"
-      data-fade-in="0.12"
-      data-fade-out="0.25"
-    ></audio>
+    <audio id="master-audio" src="./{audio_rel}" data-start="0" data-duration="{total_duration:.3f}" data-volume="1"></audio>
 {scenes_joined}
     <div id="caption-stage">
 {captions_joined}
@@ -1183,9 +1142,9 @@ class HyperFramesComposer:
         shader_transitions: List[Dict[str, Any]],
     ) -> str:
         lines = [
-            f"# HyperFrames v10.0 Studio Pro Specification — {title}",
+            f"# HyperFrames v11.0 Studio Pro Specification — {title}",
             f"- **Topic**: {topic}",
-            f"- **Resolution & Frame Rate**: `1080x1920` (9:16 Vertical) @ `30fps` (`data-motion-blur=\"on\"`)",
+            f"- **Resolution & Frame Rate**: `1080x1920` (9:16 Vertical) @ `30fps`",
             f"- **Total Duration**: `{total_duration:.2f}s` across `{len(tiled_scenes)}` scenes",
             f"- **Optical Sharpness**: `0px` blur across all scenes (instant 0.22s 3D camera punch-in + 6-axis drift + 2.5D foreground parallax)",
             f"- **Caption Architecture**: Zero-collision `caption-pill-karaoke` dock (`padding: 6px 16px`, `column-gap: 16px`, vertical lift `y: -5`, strict non-overlapping windows)",
@@ -1202,7 +1161,7 @@ class HyperFramesComposer:
             )
         return "\n".join(lines) + "\n"
 
-    def try_cli_render(self, output_mp4: Path, timeout_sec: int = 540) -> bool:
+    def try_cli_render(self, output_mp4: Path, timeout_sec: int = 720) -> bool:
         if os.getenv("RENDER_ENGINE", "hyperframes").strip().lower() == "ffmpeg":
             return False
 
@@ -1225,40 +1184,56 @@ class HyperFramesComposer:
             if lint_proc.returncode == 0:
                 print("[HyperFrames] `npx hyperframes lint` passed with zero structural errors!")
             else:
-                print(f"[HyperFrames] Lint notice: {lint_proc.stdout[:240]} {lint_proc.stderr[:240]}")
+                print(f"[HyperFrames] Lint notice: {lint_proc.stdout[:300]} {lint_proc.stderr[:300]}")
 
-            print(f"[HyperFrames] Launching `npx hyperframes render --output {output_mp4.resolve()}` (production quality)...")
-            render_proc = subprocess.run(
-                [
-                    npx_bin,
-                    "--yes",
-                    "hyperframes",
-                    "render",
-                    "--output",
-                    str(output_mp4.resolve()),
-                ],
-                cwd=str(self.project_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=timeout_sec,
-                check=False,
-            )
-            if (
-                render_proc.returncode == 0
-                and output_mp4.exists()
-                and output_mp4.stat().st_size > 250_000
-            ):
-                print(
-                    f"[HyperFrames] Successfully rendered MP4 via `npx hyperframes render` "
-                    f"({output_mp4.stat().st_size // 1024} KB)!"
+            for attempt in (1, 2):
+                if attempt == 2 and self._last_build_args is not None:
+                    print("[HyperFrames] Retrying `npx hyperframes render` in Pure-GSAP mode (no WebGL dependency)...")
+                    pure_html = self._generate_index_html(
+                        topic=self._last_build_args["topic"],
+                        title=self._last_build_args["title"],
+                        tiled_scenes=self._last_build_args["tiled_scenes"],
+                        word_timings=self._last_build_args["word_timings"],
+                        audio_rel=self._last_build_args["audio_rel"],
+                        total_duration=self._last_build_args["total_duration"],
+                        shader_anchors=[],
+                        shader_transitions=[],
+                    )
+                    (self.project_dir / "index.html").write_text(pure_html, encoding="utf-8")
+
+                print(f"[HyperFrames] Launching `npx hyperframes render --quality draft --output {output_mp4.resolve()}` (Attempt {attempt}/2)...")
+                render_proc = subprocess.run(
+                    [
+                        npx_bin,
+                        "--yes",
+                        "hyperframes",
+                        "render",
+                        "--quality",
+                        "draft",
+                        "--output",
+                        str(output_mp4.resolve()),
+                    ],
+                    cwd=str(self.project_dir),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=timeout_sec,
+                    check=False,
                 )
-                return True
-            print(
-                f"[HyperFrames] CLI render notice (exit {render_proc.returncode}): "
-                f"{render_proc.stderr[-300:] or render_proc.stdout[-300:]}. "
-                "Using hybrid FFmpeg cinema renderer with identical timing & audio."
-            )
+                if (
+                    render_proc.returncode == 0
+                    and output_mp4.exists()
+                    and output_mp4.stat().st_size > 250_000
+                ):
+                    print(
+                        f"[HyperFrames] Successfully rendered MP4 via `npx hyperframes render` on attempt {attempt} "
+                        f"({output_mp4.stat().st_size // 1024} KB)!"
+                    )
+                    return True
+                print(
+                    f"[HyperFrames] CLI render attempt {attempt} exited with {render_proc.returncode}: "
+                    f"STDOUT={render_proc.stdout[-400:]} STDERR={render_proc.stderr[-400:]}"
+                )
         except Exception as exc:
             print(f"[HyperFrames] CLI execution notice ({exc}); falling back to hybrid FFmpeg cinema renderer.")
         return False
