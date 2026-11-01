@@ -1,11 +1,13 @@
 """
-US Young Male Voiceover + Millisecond Word-Boundary Timestamp Engine.
-Mapped directly to your Heroku Config Vars:
+US Young Male Voiceover + Millisecond Word-Boundary Timestamp Engine (v10.0).
+Mapped directly to your Heroku / GitHub Secrets:
 - `AZURE_SPEECH_KEY`
 - `AZURE_SPEECH_REGION` (e.g., `centralindia` — Azure Speech supports all `en-US` voices from any region!)
 - `AZURE_TTS_VOICE` (Automatically overrides `hi-IN-*` Hindi voices with `en-US-BrianMultilingualNeural`,
   Microsoft's flagship energetic young American male creator voice for US Shorts)
-- `VOICE_SPEED_PERCENT` (e.g., `3` -> `+3%` speech rate via SSML prosody)
+- `VOICE_SPEED_PERCENT` (e.g., `2` -> `+2%` speech rate via SSML prosody)
+- Includes automatic punctuation boundary merging & monotonic non-overlapping timestamp sanitization
+  so standalone punctuation marks (`,`, `.`, `;`, `—`) never become separate caption tokens or cause overlaps.
 """
 import asyncio
 import os
@@ -17,6 +19,8 @@ from typing import List, Tuple
 from xml.sax.saxutils import escape
 
 DEFAULT_US_YOUNG_VOICE = "en-US-BrianMultilingualNeural"
+PUNCT_ONLY_RE = re.compile(r"^[,.;:!?—–\-\"'\)\]\}\u2014\u2013]+$")
+LEADING_PUNCT_RE = re.compile(r"^([,.;:!?—–\-]+)(.+)$")
 
 
 @dataclass
@@ -42,13 +46,76 @@ def get_audio_duration(audio_path: Path) -> float:
     return float(out)
 
 
+def sanitize_relative_word_boundaries(
+    raw_boundaries: List[Tuple[str, float, float]],
+    clip_duration: float,
+) -> List[Tuple[str, float, float]]:
+    """
+    1. Merges standalone punctuation events (`,`, `.`, `;`, `—`) emitted by Azure Speech SDK
+       onto the preceding word token so punctuation never renders as an isolated word.
+    2. Strips leading punctuation onto the previous word.
+    3. Enforces strictly monotonic, non-overlapping `[start_sec, end_sec]` windows so two words
+       or caption groups never collide in time.
+    """
+    merged: List[List[ object ]] = []
+    for raw_text, st, et in raw_boundaries:
+        token = str(raw_text or "").strip()
+        if not token:
+            continue
+        st_f = max(0.0, float(st))
+        et_f = max(st_f + 0.06, float(et))
+
+        if PUNCT_ONLY_RE.match(token):
+            if merged:
+                merged[-1][0] = f"{merged[-1][0]}{token}"
+                merged[-1][2] = max(float(merged[-1][2]), min(et_f, float(merged[-1][2]) + 0.08))
+            continue
+
+        m = LEADING_PUNCT_RE.match(token)
+        if m:
+            lead_p, rest = m.group(1), m.group(2).strip()
+            if merged:
+                merged[-1][0] = f"{merged[-1][0]}{lead_p}"
+            if not rest:
+                continue
+            token = rest
+
+        # Clean stray internal whitespace
+        token = re.sub(r"\s+", " ", token)
+        merged.append([token, st_f, et_f])
+
+    if not merged:
+        return []
+
+    # Enforce strict non-overlapping monotonic intervals
+    n = len(merged)
+    sanitized: List[Tuple[str, float, float]] = []
+    for i in range(n):
+        w_str = str(merged[i][0])
+        st_i = float(merged[i][1])
+        et_i = float(merged[i][2])
+        if i > 0 and st_i < sanitized[-1][2]:
+            st_i = sanitized[-1][2]
+        if i + 1 < n:
+            next_st = float(merged[i + 1][1])
+            if next_st > st_i + 0.04:
+                et_i = min(et_i, next_st - 0.012)
+            else:
+                et_i = st_i + 0.05
+        else:
+            et_i = min(max(et_i, st_i + 0.08), max(st_i + 0.08, clip_duration - 0.02))
+        et_i = max(st_i + 0.04, et_i)
+        sanitized.append((w_str, round(st_i, 3), round(et_i, 3)))
+
+    return sanitized
+
+
 class VoiceEngine:
     def __init__(self):
         self.speech_key = os.getenv("AZURE_SPEECH_KEY", "").strip()
         self.speech_region = os.getenv("AZURE_SPEECH_REGION", "centralindia").strip()
 
         raw_voice = os.getenv("AZURE_TTS_VOICE", DEFAULT_US_YOUNG_VOICE).strip()
-        # Ensure we ALWAYS use a young US English voice even if the old Heroku var had `hi-IN-MadhurNeural`
         if not raw_voice or raw_voice.lower().startswith("hi-in"):
             print(
                 f"[VoiceEngine] Overriding '{raw_voice}' -> '{DEFAULT_US_YOUNG_VOICE}' (Young US English Voice for US Channel)"
@@ -77,8 +144,9 @@ class VoiceEngine:
             text = scene["narration"].strip()
             scene_mp3 = output_dir / f"scene_{scene_id:02d}.mp3"
 
-            words_with_rel_times = self._synthesize_single_clip(text, scene_mp3)
+            raw_words_rel = self._synthesize_single_clip(text, scene_mp3)
             clip_dur = get_audio_duration(scene_mp3)
+            words_with_rel_times = sanitize_relative_word_boundaries(raw_words_rel, clip_dur)
 
             scene_words = []
             for w_text, w_start, w_end in words_with_rel_times:
@@ -130,7 +198,7 @@ class VoiceEngine:
         )
         print(
             f"[VoiceEngine] Synthesized {len(enriched_scenes)} scenes with '{self.voice}' (+{self.speed_pct}% speed) "
-            f"({current_offset:.1f}s total, {len(all_word_timings)} synced words)."
+            f"({current_offset:.1f}s total, {len(all_word_timings)} sanitized synced words)."
         )
         return master_vo, all_word_timings, enriched_scenes
 
@@ -162,8 +230,8 @@ class VoiceEngine:
 
         def on_word(evt):
             start_s = evt.audio_offset / 10_000_000.0
-            dur_s = evt.duration.total_seconds() if evt.duration else 0.22
-            word_boundaries.append((evt.text, start_s, start_s + max(dur_s, 0.12)))
+            dur_s = evt.duration.total_seconds() if evt.duration else 0.18
+            word_boundaries.append((evt.text, start_s, start_s + max(dur_s, 0.08)))
 
         synthesizer.synthesis_word_boundary.connect(on_word)
 
@@ -199,7 +267,7 @@ class VoiceEngine:
                 elif chunk["type"] == "WordBoundary":
                     start_s = chunk["offset"] / 10_000_000.0
                     dur_s = chunk["duration"] / 10_000_000.0
-                    word_boundaries.append((chunk["text"], start_s, start_s + max(dur_s, 0.12)))
+                    word_boundaries.append((chunk["text"], start_s, start_s + max(dur_s, 0.08)))
 
         if not word_boundaries:
             dur = get_audio_duration(out_mp3)
