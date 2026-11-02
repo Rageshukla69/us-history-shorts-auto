@@ -75,13 +75,28 @@ class ComfyUIVideoClient:
                     .get("required", {})
                     .get("ckpt_name", [[]])[0]
                 )
+                # Also check available CLIP encoders if LTX is present
+                clip_resp = self.session.get(f"{self.api_url}/object_info/CLIPLoader", timeout=6)
+                if clip_resp.status_code == 200:
+                    clips = (
+                        clip_resp.json()
+                        .get("CLIPLoader", {})
+                        .get("input", {})
+                        .get("required", {})
+                        .get("clip_name", [[]])[0]
+                    )
+                    for cl in clips:
+                        if "t5" in str(cl).lower():
+                            self.t5_clip = str(cl)
+                            break
+                for c in ckpts:
+                    if "svd" in str(c).lower():
+                        self.svd_ckpt = str(c)
+                        return "svd_xt"
                 for c in ckpts:
                     if "ltx" in str(c).lower():
                         self.ltx_ckpt = str(c)
                         return "ltx_i2v"
-                    if "svd" in str(c).lower():
-                        self.svd_ckpt = str(c)
-                        return "svd_xt"
         except Exception:
             pass
         return self.workflow_mode
