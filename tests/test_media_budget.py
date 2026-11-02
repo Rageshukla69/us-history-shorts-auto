@@ -38,3 +38,8 @@ class BudgetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_stale_two_cap_upgraded_to_ten(self):
+        with patch.dict(os.environ, {"MAX_AI_IMAGES_PER_SHORT": "2"}, clear=False):
+            fetcher = MediaFetcher()
+            self.assertEqual(fetcher.max_ai_images, 10)
