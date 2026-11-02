@@ -378,6 +378,7 @@ class MediaFetcher:
         if prefer == "ai_image" and can_use_ai:
             tried_ai_this_scene = True
             prompt = str(scene.get("image_prompt") or subject or narration)
+            print(f"[MediaFetcher] Scene {scene_id:02d}: Generating 9:16 MAI-Image-2.6-Flash keyframe ({self.ai_images_used + 1}/{self.max_ai_images})...", flush=True)
             ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
@@ -392,6 +393,7 @@ class MediaFetcher:
                     motion_prompt=motion_prompt,
                     duration_sec=dur_s,
                     dest_mp4=comfy_mp4,
+                    scene_id=scene_id,
                 )
                 if animated:
                     self.comfy_videos_used += 1
@@ -495,11 +497,33 @@ class MediaFetcher:
         # ---------------------------------------------------------------------
         if can_use_ai and not tried_ai_this_scene:
             prompt = str(scene.get("image_prompt") or subject or narration)
+            print(f"[MediaFetcher] Scene {scene_id:02d}: Generating 9:16 MAI-Image-2.6-Flash keyframe ({self.ai_images_used + 1}/{self.max_ai_images})...", flush=True)
             ai_img = self._generate_foundry_image(prompt, assets_dir / f"scene_{scene_id:02d}_ai.jpg")
             if ai_img:
                 self.ai_images_used += 1
                 self.ai_generated_images.append(ai_img)
                 self.downloaded_scene_images.append(ai_img)
+                motion_prompt = str(scene.get("motion_prompt") or prompt)
+                dur_s = float(scene.get("duration_sec", 4.5))
+                comfy_mp4 = assets_dir / f"scene_{scene_id:02d}_comfy.mp4"
+                animated = self.comfy_client.animate_keyframe_to_video(
+                    keyframe_path=ai_img,
+                    motion_prompt=motion_prompt,
+                    duration_sec=dur_s,
+                    dest_mp4=comfy_mp4,
+                    scene_id=scene_id,
+                )
+                if animated:
+                    self.comfy_videos_used += 1
+                    self.video_clips_used += 1
+                    self.scene_audit_log.append({
+                        "scene_id": scene_id,
+                        "kind": f"COMFYUI AI VIDEO ({self.comfy_videos_used}/{self.comfy_client.max_clips}) + MAI KEYFRAME",
+                        "source": animated.name,
+                        "narration": narration,
+                        "source_url": "ComfyUI I2V + MAI-Image-2.6-Flash",
+                    })
+                    return animated, "video"
                 self.scene_audit_log.append({
                     "scene_id": scene_id,
                     "kind": f"AI RECONSTRUCTION ({self.ai_images_used}/{self.max_ai_images})",
