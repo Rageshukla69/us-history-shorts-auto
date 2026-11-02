@@ -81,7 +81,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt kaggle six playwright
-          python -m playwright install chromium
+          python -m playwright install --with-deps chromium
 
       - name: Run Automated Unit Tests
         run: |
