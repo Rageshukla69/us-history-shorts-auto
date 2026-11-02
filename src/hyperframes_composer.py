@@ -366,7 +366,7 @@ class HyperFramesComposer:
             if is_video:
                 media_html = (
                     f'<video id="{sid}-vid" class="scene-video" src="./{asset_rel}" '
-                    f'data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="0" muted playsinline></video>'
+                    f'data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="0" loop muted playsinline preload="auto"></video>'
                 )
             else:
                 media_html = (
