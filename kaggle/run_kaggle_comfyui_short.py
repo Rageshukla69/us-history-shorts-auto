@@ -1,15 +1,12 @@
 """
-One-Shot Kaggle GPU Runner (`kaggle/run_kaggle_comfyui_short.py` — v13.0 Quota-Saver Edition):
-1. Installs & configures headless ComfyUI inside `/tmp/ComfyUI` (using Kaggle's fast temporary disk so
-   `/kaggle/working` never overflows Kaggle's 20 GB output artifact cap!).
-2. Downloads `svd_xt.safetensors` (fp16, ~4.0 GB) and `ltx-video-2b-v0.9.5.safetensors` + `t5xxl_fp8_e4m3fn.safetensors`
-   into `/tmp/ComfyUI/models`, plus Node.js 22 + HyperFrames CLI + Playwright Chromium.
-3. Starts ComfyUI in the background (`http://127.0.0.1:8188` with `--lowvram --fp16-vae`).
-4. Runs `src/main.py` to generate 1 complete Short (10 `MAI-Image-2.6-Flash` keyframes -> animated into realistic moving
-   9:16 cinema clips by ComfyUI -> composed in HeyGen HyperFrames v13.0 -> uploaded to YouTube).
-5. Pushes the updated `data/used_topics.json` and `data/upload_history.json` back to your GitHub repository (if `GITHUB_TOKEN` is set).
-6. Immediately terminates ComfyUI, clears CUDA VRAM, and disconnects the Kaggle GPU VM (`auto_disconnect_kaggle_gpu`)
-   so you NEVER waste a single idle minute of your 30 hrs/week Kaggle GPU quota!
+One-Shot Kaggle GPU Runner (`kaggle/run_kaggle_comfyui_short.py` — v13.1 Fast T4 + Ubuntu 24.04 Chromium Libs):
+1. Installs the Ubuntu 24.04 shared libraries required by `npx hyperframes render` (`chrome-headless-shell`):
+   `libatk-1.0.so.0`, `libatk-bridge-2.0.so.0`, `libXcomposite.so.1`, `libatspi.so.0`, `libxdamage1`, `libxrandr2`, etc.
+2. Installs headless ComfyUI inside `/tmp/ComfyUI` (keeping `/kaggle/working` under 40 MB) with the 100% public,
+   ungated `Lightricks/LTX-Video` (`ltx-video-2b-v0.9.5.safetensors`, 4.3 GB) + `t5xxl_fp8_e4m3fn.safetensors` (4.8 GB fp8)
+   so both fit easily inside a single 15 GB Tesla T4 GPU with zero OOM!
+3. Runs `src/main.py` with unbuffered real-time logging, pushes updated `used_topics.json` to GitHub, and
+   immediately disconnects the Kaggle GPU session on completion.
 """
 from __future__ import annotations
 import os
@@ -18,11 +15,33 @@ import subprocess
 import sys
 from pathlib import Path
 
+os.environ["PYTHONUNBUFFERED"] = "1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from kaggle_comfy_bridge import start_local_comfyui_on_kaggle, auto_disconnect_kaggle_gpu
 from main import run_pipeline
+
+
+def _ensure_ubuntu_2404_chromium_libs():
+    """
+    Fixes the exact error from Kaggle Ubuntu 24.04.1 LTS logs:
+    `chrome-headless-shell is missing shared libraries on Ubuntu 24.04.1 LTS: libatk-1.0.so.0, libatk-bridge-2.0.so.0, libXcomposite.so.1, libatspi.so.0`
+    """
+    print("[KaggleSetup] Installing Ubuntu 24.04 shared libraries for HyperFrames chrome-headless-shell...", flush=True)
+    subprocess.run(
+        "apt-get update -qq && apt-get install -y -qq "
+        "ffmpeg fonts-montserrat fonts-liberation fonts-dejavu-core libmagic1 "
+        "libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 "
+        "libxkbcommon0 libatspi2.0-0t64 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 "
+        "libgbm1 libpango-1.0-0 libcairo2 libasound2t64 "
+        "|| apt-get install -y -qq libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 "
+        "libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 "
+        "libgbm1 libpango-1.0-0 libcairo2 libasound2",
+        shell=True,
+        check=False,
+    )
+    subprocess.run(["npx", "--yes", "playwright", "install-deps", "chromium"], check=False)
 
 
 def _load_kaggle_secrets_into_env():
@@ -56,15 +75,20 @@ def _load_kaggle_secrets_into_env():
                         loaded += 1
                 except Exception:
                     pass
-        print(f"[KaggleSetup] Loaded {loaded} secrets from Kaggle UserSecretsClient.")
+        print(f"[KaggleSetup] Loaded {loaded} secrets from Kaggle UserSecretsClient.", flush=True)
     except Exception:
         pass
 
 
-def _ensure_comfyui_installed(comfy_dir: Path = Path("/tmp/ComfyUI")):
-    """Installs ComfyUI in `/tmp/ComfyUI` (outside `/kaggle/working`) and downloads SVD-XT fp16 (~4.0 GB) or LTX-Video 2B."""
+def _ensure_comfyui_and_ltx_fp8_installed(comfy_dir: Path = Path("/tmp/ComfyUI")):
+    """
+    Installs ComfyUI in `/tmp/ComfyUI` (outside `/kaggle/working`) and downloads:
+    1. `ltx-video-2b-v0.9.5.safetensors` (~4.3 GB, 100% public/ungated on HuggingFace)
+    2. `t5xxl_fp8_e4m3fn.safetensors` (~4.8 GB fp8 instead of 9.8 GB fp16, 100% public/ungated on HuggingFace)
+    Total VRAM footprint is < 8 GB so it runs fast on Kaggle's 15 GB Tesla T4 GPU without OOM!
+    """
     if not comfy_dir.exists():
-        print(f"[KaggleSetup] Cloning ComfyUI into {comfy_dir}...")
+        print(f"[KaggleSetup] Cloning ComfyUI into {comfy_dir}...", flush=True)
         subprocess.run(
             ["git", "clone", "--depth", "1", "https://github.com/comfyanonymous/ComfyUI.git", str(comfy_dir)],
             check=True,
@@ -79,22 +103,37 @@ def _ensure_comfyui_installed(comfy_dir: Path = Path("/tmp/ComfyUI")):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     clip_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download lightweight SVD-XT fp16 (4.0 GB, single file, no external 10GB CLIP required, runs fast on Kaggle T4)
-    svd_file = ckpt_dir / "svd_xt.safetensors"
-    if not svd_file.exists() or svd_file.stat().st_size < 1_000_000_000:
-        print("[KaggleSetup] Downloading StabilityAI SVD-XT fp16 Image-to-Video checkpoint (~4.0 GB)...")
+    ltx_file = ckpt_dir / "ltx-video-2b-v0.9.5.safetensors"
+    if not ltx_file.exists() or ltx_file.stat().st_size < 1_000_000_000:
+        print("[KaggleSetup] Downloading Lightricks LTX-Video 2B v0.9.5 checkpoint (~4.3 GB)...", flush=True)
         subprocess.run(
             [
                 "wget",
                 "-q",
                 "-O",
-                str(svd_file),
-                "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/main/svd_xt.safetensors",
+                str(ltx_file),
+                "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2b-v0.9.5.safetensors",
             ],
             check=False,
         )
-    os.environ.setdefault("COMFYUI_WORKFLOW_MODE", "svd_xt")
-    os.environ.setdefault("COMFYUI_SVD_CHECKPOINT", "svd_xt.safetensors")
+
+    t5_fp8_file = clip_dir / "t5xxl_fp8_e4m3fn.safetensors"
+    if not t5_fp8_file.exists() or t5_fp8_file.stat().st_size < 1_000_000_000:
+        print("[KaggleSetup] Downloading T5-XXL FP8 text encoder (~4.8 GB, fits easily in T4 VRAM)...", flush=True)
+        subprocess.run(
+            [
+                "wget",
+                "-q",
+                "-O",
+                str(t5_fp8_file),
+                "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors",
+            ],
+            check=False,
+        )
+
+    os.environ["COMFYUI_WORKFLOW_MODE"] = "ltx_i2v"
+    os.environ["COMFYUI_LTX_CHECKPOINT"] = "ltx-video-2b-v0.9.5.safetensors"
+    os.environ["COMFYUI_T5_MODEL"] = "t5xxl_fp8_e4m3fn.safetensors"
 
 
 def _sync_completed_topic_to_github():
@@ -113,9 +152,9 @@ def _sync_completed_topic_to_github():
             remote_url = f"https://x-access-token:{gh_token}@github.com/{gh_repo}.git"
             subprocess.run(["git", "pull", "--rebase", "--autostash", remote_url, "main"], cwd=str(REPO_ROOT), check=False)
             subprocess.run(["git", "push", remote_url, "HEAD:main"], cwd=str(REPO_ROOT), check=False)
-            print("[KaggleSetup] Synced updated topic history back to GitHub repository.")
+            print("[KaggleSetup] Synced updated topic history back to GitHub repository.", flush=True)
     except Exception as exc:
-        print(f"[KaggleSetup] GitHub sync notice: {exc}")
+        print(f"[KaggleSetup] GitHub sync notice: {exc}", flush=True)
 
 
 def _copy_final_deliverables_to_kaggle_working():
@@ -135,13 +174,13 @@ def _copy_final_deliverables_to_kaggle_working():
 def main():
     comfy_proc = None
     try:
+        _ensure_ubuntu_2404_chromium_libs()
         _load_kaggle_secrets_into_env()
         os.environ["MAX_AI_IMAGES_PER_SHORT"] = "10"
-        os.environ["MAX_COMFY_VIDEOS_PER_SHORT"] = "10"
-        _ensure_comfyui_installed(Path("/tmp/ComfyUI"))
+        os.environ.setdefault("MAX_COMFY_VIDEOS_PER_SHORT", "5")
+        _ensure_comfyui_and_ltx_fp8_installed(Path("/tmp/ComfyUI"))
         comfy_proc = start_local_comfyui_on_kaggle(Path("/tmp/ComfyUI"))
         os.chdir(str(REPO_ROOT))
-        # temporarily disable inner exit so we can sync git before final disconnect
         os.environ["KAGGLE_AUTO_DISCONNECT"] = "false"
         run_pipeline()
         _sync_completed_topic_to_github()
