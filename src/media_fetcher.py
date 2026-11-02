@@ -647,6 +647,12 @@ class MediaFetcher:
                 "razor-sharp focus on subject, 35mm Kodak archival film look, vertical 9:16 portrait composition, "
                 "no blur, no text, no words, no watermarks"
             )
+            prompt_cache_key = hashlib.sha256(clean_prompt.encode("utf-8")).hexdigest()
+            cached_ai_img = self.media_cache_dir / f"mai_{prompt_cache_key}.jpg"
+            if cached_ai_img.exists() and cached_ai_img.stat().st_size > 15_000:
+                shutil.copy2(cached_ai_img, dest_path)
+                print(f"[MediaFetcher] Reused cached MAI-Image-2.6-Flash keyframe -> {dest_path.name} (0 quota used!)", flush=True)
+                return dest_path
 
             route_attempts = [
                 (
