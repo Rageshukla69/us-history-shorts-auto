@@ -188,8 +188,10 @@ def main():
         _ensure_ubuntu_2404_chromium_libs()
         _load_kaggle_secrets_into_env()
         os.environ["MAX_AI_IMAGES_PER_SHORT"] = "10"
-        os.environ.setdefault("MAX_COMFY_VIDEOS_PER_SHORT", "5")
-        _ensure_comfyui_and_ltx_fp8_installed(Path("/tmp/ComfyUI"))
+        os.environ["MAX_COMFY_VIDEOS_PER_SHORT"] = "10"
+        os.environ.setdefault("DRY_RUN", "true")
+        if os.getenv("COMFYUI_DOWNLOAD_LTX", "false").lower() == "true":
+            _ensure_comfyui_and_ltx_fp8_installed(Path("/tmp/ComfyUI"))
         comfy_proc = None  # v14.0 Direct In-Process ComfyUI Engine uses 100% of GPU VRAM directly!
         os.chdir(str(REPO_ROOT))
         os.environ["KAGGLE_AUTO_DISCONNECT"] = "false"
