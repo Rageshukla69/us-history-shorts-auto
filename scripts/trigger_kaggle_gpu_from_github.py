@@ -83,7 +83,7 @@ def main() -> int:
     ]
     env_dict = {k: os.getenv(k, "") for k in passthrough_keys if os.getenv(k, "")}
     env_dict["MAX_AI_IMAGES_PER_SHORT"] = "10"
-    env_dict["MAX_COMFY_VIDEOS_PER_SHORT"] = "10"
+    env_dict["MAX_COMFY_VIDEOS_PER_SHORT"] = "5"
 
     runner_script = f"""import os, subprocess, sys
 from pathlib import Path
@@ -92,7 +92,8 @@ ENV_VARS = {json.dumps(env_dict)}
 for k, v in ENV_VARS.items():
     os.environ[k] = str(v)
 
-subprocess.run("apt-get update -qq && apt-get install -y -qq ffmpeg fonts-montserrat fonts-liberation fonts-dejavu-core libmagic1 libnss3 libgbm1", shell=True, check=False)
+os.environ["PYTHONUNBUFFERED"] = "1"
+subprocess.run("apt-get update -qq && apt-get install -y -qq ffmpeg fonts-montserrat fonts-liberation fonts-dejavu-core libmagic1 libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libxkbcommon0 libatspi2.0-0t64 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 || apt-get install -y -qq ffmpeg fonts-montserrat fonts-liberation fonts-dejavu-core libmagic1 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2", shell=True, check=False)
 subprocess.run("curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y -qq nodejs", shell=True, check=False)
 
 repo_slug = os.environ.get("GITHUB_REPO", "Rageshukla69/us-history-shorts-auto")
@@ -106,7 +107,7 @@ subprocess.run(["git", "clone", "--depth", "1", repo_url, str(work_dir)], check=
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(work_dir / "requirements.txt"), "playwright"], check=True)
 subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
 subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=str(work_dir), check=False)
-subprocess.run([sys.executable, str(work_dir / "kaggle/run_kaggle_comfyui_short.py")], cwd=str(work_dir), check=True)
+subprocess.run([sys.executable, "-u", str(work_dir / "kaggle/run_kaggle_comfyui_short.py")], cwd=str(work_dir), check=True)
 """
 
     with tempfile.TemporaryDirectory() as tmp:
