@@ -1110,7 +1110,7 @@ class HyperFramesComposer:
                 ffmpeg_cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
             )
 
             with sync_playwright() as p:
@@ -1157,7 +1157,7 @@ class HyperFramesComposer:
             print(f"[HyperFrames] Headless Chromium compositor notice: {exc}", flush=True)
         return False
 
-    def try_cli_render(self, output_mp4: Path, timeout_sec: int = 360) -> bool:
+    def try_cli_render(self, output_mp4: Path, timeout_sec: int = 900) -> bool:
         if os.getenv("RENDER_ENGINE", "hyperframes").strip().lower() == "ffmpeg":
             return False
 
@@ -1181,14 +1181,7 @@ class HyperFramesComposer:
             except Exception:
                 pass
 
-        # Fast-Path: When scenes contain 1080x1920 @ 30fps video clips, use our FFmpeg + Transparent Headless Chromium
-        # HyperFrames Overlay Compositor FIRST so we don't spend 10 minutes waiting on Node.js videoFrameExtractor.ts!
-        has_videos = bool(
-            self._last_build_args
-            and any(s.get("asset_type") == "video" for s in self._last_build_args.get("tiled_scenes", []))
-        )
-        if has_videos and self._render_via_playwright_browser(output_mp4):
-            return True
+        has_videos = False  # Always run genuine `npx hyperframes render` FIRST!
 
         if npx_bin:
             try:
