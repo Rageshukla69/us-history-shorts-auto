@@ -32,7 +32,7 @@ def is_running_on_kaggle() -> bool:
 
 
 def start_local_comfyui_on_kaggle(
-    comfy_dir: Path = Path("/kaggle/working/ComfyUI"),
+    comfy_dir: Path = Path("/tmp/ComfyUI"),
     port: int = 8188,
     startup_timeout_sec: int = 180,
 ) -> Optional[subprocess.Popen]:
@@ -66,6 +66,7 @@ def start_local_comfyui_on_kaggle(
             str(port),
             "--disable-auto-launch",
             "--fp16-vae",
+            "--lowvram",
         ],
         cwd=str(comfy_dir),
         stdout=log_file,
