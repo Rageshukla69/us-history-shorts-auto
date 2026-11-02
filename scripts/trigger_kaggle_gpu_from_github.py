@@ -156,6 +156,17 @@ subprocess.run([sys.executable, "-u", str(work_dir / "kaggle/run_kaggle_comfyui_
                 out_dir = Path("output")
                 out_dir.mkdir(parents=True, exist_ok=True)
                 subprocess.run(["kaggle", "kernels", "output", kernel_id, "-p", str(out_dir)], check=False)
+                # Flatten output/output/* into output/* so GitHub Actions finds output/final_short.mp4 directly
+                nested_out = out_dir / "output"
+                if nested_out.exists() and nested_out.is_dir():
+                    for item in nested_out.iterdir():
+                        dest = out_dir / item.name
+                        if dest.exists():
+                            if dest.is_dir():
+                                shutil.rmtree(dest, ignore_errors=True)
+                            else:
+                                dest.unlink(missing_ok=True)
+                        shutil.move(str(item), str(dest))
                 return 0
             if "error" in out_low or "cancel" in out_low:
                 print("[KaggleDispatch] Kaggle GPU kernel reported error; fetching log and falling back to local runner.")
