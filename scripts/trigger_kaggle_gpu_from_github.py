@@ -83,7 +83,7 @@ def main() -> int:
     ]
     env_dict = {k: os.getenv(k, "") for k in passthrough_keys if os.getenv(k, "")}
     env_dict["MAX_AI_IMAGES_PER_SHORT"] = "10"
-    env_dict["MAX_COMFY_VIDEOS_PER_SHORT"] = "10"
+    env_dict["MAX_COMFY_VIDEOS_PER_SHORT"] = "4"
     env_dict["DRY_RUN"] = os.getenv("DRY_RUN", "true") or "true"
 
     runner_script = f"""import os, subprocess, sys
