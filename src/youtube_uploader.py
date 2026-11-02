@@ -59,7 +59,7 @@ def upload_short_to_youtube(
     attributions: List[str],
     sources: Optional[List[dict]] = None,
 ) -> Optional[str]:
-    if os.getenv("DRY_RUN", "false").lower() == "true":
+    if os.getenv("DRY_RUN", "true").lower() == "true":
         print("[YouTubeUploader] DRY_RUN is enabled; skipping YouTube API upload.")
         return "dry_run_id"
 
