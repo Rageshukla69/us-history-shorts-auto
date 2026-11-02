@@ -130,11 +130,13 @@ def auto_disconnect_kaggle_gpu(
         sys.stdout.flush()
         sys.stderr.flush()
         run_type = os.getenv("KAGGLE_KERNEL_RUN_TYPE", "").strip().lower()
-        # In Interactive mode, killing parent PID (Jupyter server) immediately stops the Kaggle GPU VM
+        # In Interactive mode, killing parent PID (Jupyter server) immediately stops the Kaggle GPU VM.
+        # In Batch mode (`kaggle kernels push`), returning normally allows Kaggle's hypervisor to bundle `/kaggle/working/final_short.mp4`
+        # into the downloadable Kernel Output and then immediately terminate the batch VM!
         if run_type == "interactive":
             try:
                 os.kill(os.getppid(), signal.SIGTERM)
                 time.sleep(1.0)
             except Exception:
                 pass
-        os._exit(0)
+            os._exit(0)
