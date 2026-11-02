@@ -192,6 +192,10 @@ def run_pipeline():
         if not rendered_via_hf_cli:
             composer.render_short(enriched_scenes, master_vo, ass_path, final_mp4, temp_dir / "segments")
 
+        # Immediately copy rendered MP4 to /kaggle/working if on Kaggle so it is never lost
+        if Path("/kaggle/working").exists() and final_mp4.exists():
+            shutil.copy2(final_mp4, Path("/kaggle/working/final_short.mp4"))
+
         # Step 6: Technical & Documentary QC Gate
         qc = validate_rendered_short(final_mp4, enriched_scenes, output_dir / "quality_report.json")
         print(f"[QualityControl] PASS: {qc}")
