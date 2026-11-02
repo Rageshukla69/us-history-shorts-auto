@@ -142,7 +142,8 @@ class FoundryLLMClient:
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=2, min=2, max=6))
     def generate_storyboard(self, topic: str) -> Dict[str, Any]:
-        max_ai = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "10")))
+        raw_max_ai = max(0, int(os.getenv("MAX_AI_IMAGES_PER_SHORT", "10")))
+        max_ai = 10 if (0 < raw_max_ai < 10) else raw_max_ai
         target_ai_min = max_ai
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
