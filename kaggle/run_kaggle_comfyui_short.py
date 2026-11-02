@@ -94,14 +94,16 @@ def _ensure_comfyui_and_ltx_fp8_installed(comfy_dir: Path = Path("/tmp/ComfyUI")
             check=True,
         )
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "-r", str(comfy_dir / "requirements.txt")],
+            [sys.executable, "-m", "pip", "install", "-q", "-r", str(comfy_dir / "requirements.txt"), "av", "torchsde", "einops", "imageio", "imageio-ffmpeg"],
             check=True,
         )
 
     ckpt_dir = comfy_dir / "models" / "checkpoints"
     clip_dir = comfy_dir / "models" / "clip"
+    te_dir = comfy_dir / "models" / "text_encoders"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     clip_dir.mkdir(parents=True, exist_ok=True)
+    te_dir.mkdir(parents=True, exist_ok=True)
 
     ltx_file = ckpt_dir / "ltx-video-2b-v0.9.5.safetensors"
     if not ltx_file.exists() or ltx_file.stat().st_size < 1_000_000_000:
@@ -158,17 +160,26 @@ def _sync_completed_topic_to_github():
 
 
 def _copy_final_deliverables_to_kaggle_working():
-    """Copies only the final rendered MP4 and metadata JSON into `/kaggle/working/output` (< 40 MB)."""
+    """Copies the final rendered MP4, metadata JSON, and HyperFrames HTML into `/kaggle/working` (< 40 MB)."""
     out_src = REPO_ROOT / "output"
-    out_dst = Path("/kaggle/working/output")
-    if out_src.exists() and Path("/kaggle/working").exists():
-        out_dst.mkdir(parents=True, exist_ok=True)
-        for ext in ("*.mp4", "*.json", "*.jpg"):
+    kw_root = Path("/kaggle/working")
+    if out_src.exists() and kw_root.exists():
+        for ext in ("*.mp4", "*.json", "*.jpg", "*.ass"):
             for f in out_src.glob(ext):
                 try:
-                    shutil.copy2(f, out_dst / f.name)
+                    shutil.copy2(f, kw_root / f.name)
                 except Exception:
                     pass
+        hf_src = out_src / "hyperframes_project"
+        hf_dst = kw_root / "hyperframes_project"
+        if hf_src.exists():
+            hf_dst.mkdir(parents=True, exist_ok=True)
+            for ext in ("*.html", "*.md"):
+                for f in hf_src.glob(ext):
+                    try:
+                        shutil.copy2(f, hf_dst / f.name)
+                    except Exception:
+                        pass
 
 
 def main():
@@ -179,7 +190,7 @@ def main():
         os.environ["MAX_AI_IMAGES_PER_SHORT"] = "10"
         os.environ.setdefault("MAX_COMFY_VIDEOS_PER_SHORT", "5")
         _ensure_comfyui_and_ltx_fp8_installed(Path("/tmp/ComfyUI"))
-        comfy_proc = start_local_comfyui_on_kaggle(Path("/tmp/ComfyUI"))
+        comfy_proc = None  # v14.0 Direct In-Process ComfyUI Engine uses 100% of GPU VRAM directly!
         os.chdir(str(REPO_ROOT))
         os.environ["KAGGLE_AUTO_DISCONNECT"] = "false"
         run_pipeline()
