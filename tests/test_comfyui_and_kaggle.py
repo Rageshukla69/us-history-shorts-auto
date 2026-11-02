@@ -15,8 +15,8 @@ class ComfyUIAndKaggleTests(unittest.TestCase):
         wf = client._build_ltx_i2v_prompt("scene_01_ai.jpg", "Slow dolly in over bronze gears", num_frames=73)
         self.assertEqual(wf["1"]["class_type"], "CheckpointLoaderSimple")
         self.assertEqual(wf["7"]["class_type"], "LTXVImgToVideo")
-        self.assertEqual(wf["7"]["inputs"]["width"], 576)
-        self.assertEqual(wf["7"]["inputs"]["height"], 1024)
+        self.assertEqual(wf["7"]["inputs"]["width"], 512)
+        self.assertEqual(wf["7"]["inputs"]["height"], 896)
         self.assertEqual(wf["7"]["inputs"]["length"], 73)
         self.assertEqual(wf["15"]["class_type"], "SaveAnimatedWEBP")
 
