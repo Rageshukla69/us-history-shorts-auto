@@ -65,8 +65,7 @@ def start_local_comfyui_on_kaggle(
             "--port",
             str(port),
             "--disable-auto-launch",
-            "--fp16-vae",
-            "--lowvram",
+            "--fp16-vae"
         ],
         cwd=str(comfy_dir),
         stdout=log_file,
