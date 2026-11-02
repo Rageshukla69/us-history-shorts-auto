@@ -192,13 +192,16 @@ def main():
         os.environ.setdefault("DRY_RUN", "true")
         if os.getenv("COMFYUI_DOWNLOAD_LTX", "false").lower() == "true":
             _ensure_comfyui_and_ltx_fp8_installed(Path("/tmp/ComfyUI"))
-        comfy_proc = None  # v14.0 Direct In-Process ComfyUI Engine uses 100% of GPU VRAM directly!
         os.chdir(str(REPO_ROOT))
         os.environ["KAGGLE_AUTO_DISCONNECT"] = "false"
         run_pipeline()
         _sync_completed_topic_to_github()
-        _copy_final_deliverables_to_kaggle_working()
+    except Exception as exc:
+        import traceback
+        print(f"[KaggleSetup] Pipeline exception: {exc}", flush=True)
+        traceback.print_exc()
     finally:
+        _copy_final_deliverables_to_kaggle_working()
         os.environ["KAGGLE_AUTO_DISCONNECT"] = "true"
         auto_disconnect_kaggle_gpu(comfy_proc=comfy_proc, force_kernel_exit=True)
 
