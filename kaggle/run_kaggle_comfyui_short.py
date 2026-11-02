@@ -188,10 +188,9 @@ def main():
         _ensure_ubuntu_2404_chromium_libs()
         _load_kaggle_secrets_into_env()
         os.environ["MAX_AI_IMAGES_PER_SHORT"] = "10"
-        os.environ["MAX_COMFY_VIDEOS_PER_SHORT"] = "10"
+        os.environ.setdefault("MAX_COMFY_VIDEOS_PER_SHORT", "4")
         os.environ.setdefault("DRY_RUN", "true")
-        if os.getenv("COMFYUI_DOWNLOAD_LTX", "false").lower() == "true":
-            _ensure_comfyui_and_ltx_fp8_installed(Path("/tmp/ComfyUI"))
+        _ensure_comfyui_and_ltx_fp8_installed(Path("/tmp/ComfyUI"))
         os.chdir(str(REPO_ROOT))
         os.environ["KAGGLE_AUTO_DISCONNECT"] = "false"
         run_pipeline()
