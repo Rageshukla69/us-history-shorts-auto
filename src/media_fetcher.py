@@ -106,7 +106,9 @@ class MediaFetcher:
         if raw_max_ai is None or str(raw_max_ai).strip() == "":
             raw_max_ai = os.getenv("MAX_AI_IMAGES_PER_VIDEO", "10")
         try:
-            self.max_ai_images = max(0, int(str(raw_max_ai).strip()))
+            parsed_max = max(0, int(str(raw_max_ai).strip()))
+            # Upgrade stale v8 cap of 2 to 10 so every scene gets its own MAI-Image-2.6-Flash keyframe
+            self.max_ai_images = 10 if (0 < parsed_max < 10) else parsed_max
         except (TypeError, ValueError):
             self.max_ai_images = 10
 
