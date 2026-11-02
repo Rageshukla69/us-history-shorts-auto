@@ -124,23 +124,22 @@ jobs:
           MIN_AUTHENTIC_MEDIA_RATIO: ${{ vars.MIN_AUTHENTIC_MEDIA_RATIO || '0.20' }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           CUSTOM_TOPIC: ${{ github.event.inputs.custom_topic }}
-          DRY_RUN: ${{ github.event.inputs.dry_run || secrets.DRY_RUN || 'false' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           python scripts/trigger_kaggle_gpu_from_github.py || python src/main.py
 
       - name: Upload Rendered Short & HyperFrames Composition Bundle as Workflow Artifact
         uses: actions/upload-artifact@v4
-        if: always() && hashFiles('output/final_short.mp4') != ''
+        if: always()
         with:
           name: rendered-short-${{ github.run_id }}
           path: |
-            output/final_short.mp4
-            output/subtitles.ass
-            output/metadata.json
-            output/quality_report.json
-            output/hyperframes_project/index.html
-            output/hyperframes_project/preview.html
-            output/hyperframes_project/DESIGN.md
+            output/**/*.mp4
+            output/**/*.json
+            output/**/*.ass
+            output/**/*.html
+            output/**/*.md
+            output/**/*.log
           retention-days: 7
 
       - name: Commit Updated Topic Queue & History State (Backup Sync)
