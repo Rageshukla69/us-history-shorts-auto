@@ -1,25 +1,27 @@
 """
-HeyGen HyperFrames Studio Pro + Huashu Art Motion Composition & Rendering Engine (`src/hyperframes_composer.py` — v17.0):
-1. Combines HeyGen HyperFrames (`npx hyperframes render`, GSAP 3.14.2, WebGL `HyperShader`) with
-   `alchaincyf/huashu-art-motion` explainer grammars (`y2_vox_desk`, `y3_whiteboard_map`, `t3_data_chronicle`,
-   `y1_kurzgesagt_scale`, `s_living_canvas`) and Director Camera Choreography (`HuashuArtMotionDirector`).
-2. 100% Razor-Sharp Images from Frame 0 (`ZERO blur filter` and `ZERO cheap snow/particle filters`).
-3. Broadcast Zero-Collision Karaoke Pill Captions (`caption-pill-karaoke`):
-   - Merges standalone punctuation tokens onto preceding words.
-   - Clamps chunk windows (`c_end <= next_c_start - 0.025s`) so two caption phrases never overlap.
-   - Highlights active words with solid semantic pills (`#FFD700` Gold, `#FF334B` Crimson, `#00F59B` Emerald)
-     and vertical lift (`y: -5`).
-4. Genuine `npx hyperframes render` Priority 1 Pipeline (`try_cli_render`):
-   - Attempt 1: `npx hyperframes render --quality draft` (with WebGL `HyperShader` + Huashu Art Motion SVG/GSAP layers)
-   - Attempt 2: `npx hyperframes render --quality draft` (Pure-GSAP + Huashu Art Motion mode)
-   - Attempt 3: Deadlock-free Headless Chromium / Playwright deterministic 30fps `window.__timelines["main"].seek(t)`
-     HTML-to-MP4 fallback.
+HeyGen HyperFrames Studio Pro + Huashu Art Motion Composition & Rendering Engine (`src/hyperframes_composer.py` — v18.0):
+Fixes every visual issue observed in `1000047695.mp4`:
+1. ZERO blind lines, pointers, pins, or dashed boxes over photography.
+2. ZERO duplicate text:
+   - Top-left pill: `era_tag` ONLY (e.g. `FRANCE // 1807`).
+   - Top-right pill: `01 / 10` scene index badge ONLY (never internal debug names).
+   - `on_screen_callout` (e.g. `RABBITS NOT SOLDIERS`) appears ONCE per scene.
+3. Smart Quantitative Stat Filter (`_extract_smart_stat`):
+   - Separates fields with ` || ` so `stat_value="1807"` + `on_screen_callout="RABBITS..."` never merges into `"1,807 rabbits"`.
+   - Ignores standalone 4-digit calendar years (`1000–2029`) when they are just dates (already shown in `era_tag`),
+     reserving the animated data counter + Huashu bar chart exclusively for real quantities (`3,000`, `30+`, `140 FEET`, etc.).
+4. Four Distinct Huashu Art Motion Stage Layouts + Per-Cut Physical Transitions + 3 WebGL `HyperShader` Transitions:
+   - `vox_print_stage`: Tactile museum/polaroid archival print card (`#f4efe6` paper border) that physically slaps onto a
+     lit architectural desk (`scale: 1.25 -> 1.0, rotation: -4deg -> -1.3deg, ease: back.out(1.55)`) with an animated
+     marker highlighter sweep across the caption printed on the bottom border of the photo print.
+   - `data_split_stage`: Animated axes-first comparative bar chart + rolling number counter for quantitative beats.
+   - `cinema_letterbox_stage`: Widescreen cinema matte rails that open with `expo.out` + scrolling timeline scale.
+   - `fullbleed_hook_stage`: Full-bleed 9:16 keyframe with kinetic diagonal shutter wipe entrance and single highlighter callout card.
 """
 from __future__ import annotations
 import html
 import json
 import os
-import re
 import re
 import shutil
 import subprocess
@@ -59,42 +61,87 @@ def _esc(text: Any) -> str:
 
 
 def _extract_smart_stat(scene: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Extracts a true quantitative metric (like `3,000 FAMOUS COUNT`, `2,000+ YEARS OLD`, `30+ BRONZE GEARS`).
+    - Uses ` || ` delimiter between fields so a 4-digit year in `stat_value` (`1807`) never concatenates with
+      the first word of `on_screen_callout` (`RABBITS NOT SOLDIERS`).
+    - Never formats 4-digit calendar years (`1000–2029`) with a comma (`1,807` is forbidden).
+    """
     raw_val = str(scene.get("stat_value") or "").strip()
     raw_lbl = str(scene.get("stat_label") or "").strip().upper()
-    combined = f"{raw_val} {scene.get('on_screen_callout', '')} {scene.get('narration', '')}"
+    era_tag = str(scene.get("era_tag") or "").strip()
+
+    # Check if raw_val is purely a 4-digit calendar year (e.g., "1807", "1901")
+    raw_digits = raw_val.replace(",", "").strip()
+    is_pure_calendar_year = (
+        bool(re.fullmatch(r"1[0-9]{3}|20[0-2][0-9]", raw_digits))
+        and "+" not in raw_val
+        and "OLD" not in raw_lbl
+        and (
+            "YEAR" in raw_lbl
+            or "DATE" in raw_lbl
+            or "FOUND" in raw_lbl
+            or "REPORTED" in raw_lbl
+            or not raw_lbl
+            or raw_digits in era_tag
+        )
+    )
+    if is_pure_calendar_year:
+        # If the year is already in era_tag (e.g., "FRANCE // 1807"), do NOT show a redundant stat box for the year!
+        if raw_digits in era_tag:
+            return None
+        yr_num = int(raw_digits)
+        return {
+            "target": yr_num,
+            "start": max(1000, yr_num - 18),
+            "use_commas": False,
+            "suffix": "",
+            "label": (raw_lbl or "HISTORICAL YEAR")[:22],
+            "is_year": True,
+        }
+
+    # Delimit with ` || ` so `stat_value` and `on_screen_callout` never merge across boundaries!
+    combined = f"{raw_val} || {scene.get('on_screen_callout', '')} || {scene.get('narration', '')}"
 
     m_qty = re.search(
-        r"\b([1-9][0-9]{0,2}(?:,[0-9]{3})+|[1-9][0-9]{1,4})(\+?)\s*(?:-|\s)*(years?\s*old|years?|pages?|rabbits?|gears?|wheels?|fragments?|feet|miles|tons|days|hours|ships|men|divers|soldiers|birds|centuries|century)\b",
+        r"\b([1-9][0-9]{0,2}(?:,[0-9]{3})+|[1-9][0-9]{1,4})(\+?)\s*(?:-|\s)*(years?\s*old|pages?|rabbits?|gears?|wheels?|fragments?|feet|miles|tons|days|hours|ships|men|divers|soldiers|birds|centuries|century)\b",
         combined,
         re.IGNORECASE,
     )
     if m_qty:
         num = int(m_qty.group(1).replace(",", ""))
-        plus = "+" if ("+" in m_qty.group(2) or "over " in combined.lower() or "more than " in combined.lower()) else ""
-        unit = raw_lbl or m_qty.group(3).upper().replace("-", " ")
-        if unit in ("YEAR", "YEARS", "YEAR OLD"):
-            unit = "YEARS OLD" if "old" in combined.lower() else "YEARS"
-        return {
-            "target": num,
-            "start": 0,
-            "use_commas": num >= 1000,
-            "suffix": plus,
-            "label": unit[:22],
-        }
+        # Guard against matching a 4-digit year followed by a noun in narration (e.g. "1807 soldiers")
+        if 1000 <= num <= 2029 and "," not in m_qty.group(1) and num == int(raw_digits or 0):
+            pass
+        else:
+            plus = "+" if ("+" in m_qty.group(2) or "over " in combined.lower() or "more than " in combined.lower()) else ""
+            unit = raw_lbl or m_qty.group(3).upper().replace("-", " ")
+            if "YEAR" in unit and "OLD" not in unit:
+                unit = "YEARS OLD"
+            return {
+                "target": num,
+                "start": 0,
+                "use_commas": num >= 1000,
+                "suffix": plus,
+                "label": unit[:22],
+                "is_year": False,
+            }
 
     if raw_val:
         m_explicit = re.search(r"([1-9][0-9]{0,2}(?:,[0-9]{3})+|[1-9][0-9]{1,4})(\+?)", raw_val)
         if m_explicit:
             num = int(m_explicit.group(1).replace(",", ""))
             plus = m_explicit.group(2) or ("+" if "+" in raw_val else "")
-            is_year = (1100 <= num <= 2026) and not plus and ("YEAR" in raw_lbl or "DATE" in raw_lbl or "FOUND" in raw_lbl or not raw_lbl)
-            if is_year and "YEARS OLD" not in raw_lbl:
+            if 1000 <= num <= 2029 and not plus and "," not in raw_val and "OLD" not in raw_lbl:
+                if str(num) in era_tag:
+                    return None
                 return {
                     "target": num,
-                    "start": max(1000, num - 25),
+                    "start": max(1000, num - 18),
                     "use_commas": False,
                     "suffix": "",
-                    "label": (raw_lbl or "RECORDED YEAR")[:22],
+                    "label": (raw_lbl or "HISTORICAL YEAR")[:22],
+                    "is_year": True,
                 }
             return {
                 "target": num,
@@ -102,11 +149,14 @@ def _extract_smart_stat(scene: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "use_commas": num >= 1000,
                 "suffix": plus,
                 "label": (raw_lbl or "VERIFIED METRIC")[:22],
+                "is_year": False,
             }
 
     m_yr = re.search(r"\b(1[1-9][0-9]{2}|20[0-2][0-9])\b", combined)
     if m_yr:
         yr = int(m_yr.group(1))
+        if str(yr) in era_tag:
+            return None
         after = combined[m_yr.end():m_yr.end() + 12].lower()
         if not after.strip().startswith(("year", "ton", "feet", "mile", "page", "rabbit")):
             return {
@@ -115,6 +165,7 @@ def _extract_smart_stat(scene: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "use_commas": False,
                 "suffix": "",
                 "label": (raw_lbl or "HISTORICAL YEAR")[:22],
+                "is_year": True,
             }
 
     return None
@@ -252,7 +303,6 @@ class HyperFramesComposer:
         audio_rel = "assets/master_audio.wav"
         shutil.copy2(master_audio_wav, self.project_dir / audio_rel)
 
-        # Step 1: Run Huashu Art Motion Storyboard Lint & Grammar/Camera Assignment
         self.last_huashu_lint = self.huashu_director.lint_storyboard(
             topic=topic,
             scenes=scenes,
@@ -302,7 +352,7 @@ class HyperFramesComposer:
             s_a = tiled_scenes[mid_idx]
             s_b = tiled_scenes[mid_idx + 1]
             boundary = s_a["hf_end"]
-            trans_dur = 0.5
+            trans_dur = 0.55
             shader_anchors = [s_a["hf_id"], s_b["hf_id"]]
             shader_transitions = [{
                 "time": round(boundary - trans_dur / 2.0, 3),
@@ -328,7 +378,7 @@ class HyperFramesComposer:
             encoding="utf-8",
         )
         print(
-            f"[HyperFrames + HuashuArtMotion] Authored v17.0 Studio Pro 1080x1920 composition -> {self.project_dir / 'index.html'} "
+            f"[HyperFrames + HuashuArtMotion] Authored v18.0 Studio Pro 1080x1920 composition -> {self.project_dir / 'index.html'} "
             f"({len(tiled_scenes)} scenes, theme='{theme['name']}', {len(shader_transitions)} WebGL shaders, {total_duration:.2f}s)"
         )
         return self.project_dir
@@ -359,15 +409,15 @@ class HyperFramesComposer:
             et = s["hf_end"]
             asset_rel = s["hf_asset_rel"]
             is_video = s.get("asset_type") == "video"
-            callout = _esc((s.get("on_screen_callout") or f"ARCHIVE BEAT #{idx + 1:02d}").upper()[:28])
-            subject = _esc((s.get("visual_subject") or topic)[:68])
-            era_tag = _esc((s.get("era_tag") or f"CHRONICLE // BEAT {idx + 1:02d}").upper()[:28])
-            grammar = str(s.get("huashu_grammar") or "s_living_canvas")
-            grammar_badge = _esc(str(s.get("huashu_grammar_label") or "HUASHU // ART MOTION"))
+            callout = _esc((s.get("on_screen_callout") or f"CHAPTER {idx + 1:02d}").upper()[:28])
+            subject = _esc((s.get("visual_subject") or topic)[:56])
+            era_tag = _esc((s.get("era_tag") or f"ARCHIVE // {idx + 1:02d}").upper()[:28])
+            step_badge = f"SCENE {idx + 1:02d} / {n_scenes:02d}"
+            grammar = str(s.get("huashu_grammar") or "fullbleed_hook_stage")
             cam_move = str(s.get("huashu_camera") or "slow_push_in")
             stat_info = _extract_smart_stat(s)
 
-            # Exact v9.0 visibility contract (`class="scene clip"` + autoAlpha / opacity) that passes `npx hyperframes render`
+            # Visibility contract for HyperFrames
             if sid in anchor_set:
                 inline_style = ' style="opacity:0;"'
                 if sid == shader_anchors[0]:
@@ -390,98 +440,178 @@ class HyperFramesComposer:
                 )
                 media_html = ""
             else:
-                media_html = (
-                    f'<img id="{sid}-img" class="scene-media" src="./{asset_rel}" alt="{subject}" />'
-                )
+                media_html = f'<img id="{sid}-img" class="scene-media" src="./{asset_rel}" alt="{subject}" />'
 
-            # Build Huashu Art Motion SVG/HTML layer + GSAP tweens for this scene
-            huashu_svg_html, huashu_gsap = self.huashu_director.build_scene_grammar_layer(
-                scene=s, sid=sid, st=st, dur=dur, stat_info=stat_info
-            )
+            enter_t = round(st + 0.06, 3)
 
-            stat_html = ""
-            if stat_info is not None:
-                lbl_esc = _esc(stat_info["label"])
-                stat_html = f"""
-        <div id="{sid}-stat-box" class="telemetry-card">
-          <div class="telemetry-header data-text">{era_tag}</div>
-          <div id="{sid}-stat" class="telemetry-number data-text">{stat_info["start"]}</div>
-          <div class="telemetry-label display">{lbl_esc}</div>
-          <div class="telemetry-gauge-track">
-            <div id="{sid}-gauge" class="telemetry-gauge-fill"></div>
+            # -----------------------------------------------------------------
+            # Build Stage-Specific HTML & Huashu Art Motion Choreography
+            # (ZERO duplicate text, ZERO random lines/pointers on photos!)
+            # -----------------------------------------------------------------
+            if grammar == "vox_print_stage" and not is_video:
+                # Huashu `y2_vox` Tactile Archival Print Stage:
+                # Dark architectural grid desk + physical tilted museum/polaroid print card that slaps onto the desk
+                tilt_deg = -1.6 if idx % 2 == 1 else 1.5
+                start_deg = -5.5 if idx % 2 == 1 else 5.5
+                scene_blocks.append(f"""{top_level_video_html}    <div class="scene clip vox-desk-bg" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1" data-huashu-grammar="{grammar}" data-huashu-camera="{cam_move}"{inline_style}>
+      <div class="vox-grid-pattern"></div>
+      <div class="vox-print-card" id="{sid}-print-card">
+        <div class="vox-tape-top"></div>
+        <div class="vox-photo-window">
+          {media_html}
+        </div>
+        <div class="vox-print-footer">
+          <div class="vox-hl-wrap">
+            <div class="vox-hl-bar" id="{sid}-hl"></div>
+            <span class="vox-print-caption display">{callout}</span>
           </div>
-        </div>"""
-            else:
-                stat_html = f"""
-        <div id="{sid}-era-card" class="era-lower-card">
-          <div class="era-kicker data-text">{era_tag}</div>
-          <div class="era-subject display">{callout}</div>
-        </div>"""
+          <span class="vox-print-ref data-text">EXHIBIT #{idx + 1:02d}</span>
+        </div>
+      </div>
+      <div class="cinema-gradient-bottom"></div>
+      <div class="scene-content">
+        <div class="top-hud-row">
+          <div id="{sid}-era-pill" class="era-top-pill data-text">{era_tag}</div>
+          <div id="{sid}-step-pill" class="source-pill data-text">{step_badge}</div>
+        </div>
+      </div>
+    </div>""")
+                # Physical `vox_slap` entrance + inner photo counter-pan + highlighter sweep on print border
+                gsap_lines.extend([
+                    f'  tl.fromTo("#{sid}-print-card", {{ scale: 1.26, rotation: {start_deg}, y: -70, autoAlpha: 0 }}, {{ scale: 1.0, rotation: {tilt_deg}, y: 0, autoAlpha: 1, duration: 0.46, ease: "back.out(1.55)" }}, {st:.3f});',
+                    self.huashu_director.build_camera_gsap_line(sid=sid, move=cam_move, st=st, dur=dur, grammar=grammar),
+                    f'  tl.fromTo("#{sid}-hl", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.52, ease: "expo.out", transformOrigin: "left center" }}, {round(st + 0.34, 3):.3f});',
+                    f'  tl.from("#{sid}-era-pill", {{ y: -22, autoAlpha: 0, duration: 0.34, ease: "power3.out" }}, {enter_t:.3f});',
+                    f'  tl.from("#{sid}-step-pill", {{ x: 20, autoAlpha: 0, duration: 0.34, ease: "power3.out" }}, {enter_t:.3f});',
+                ])
 
-            scene_blocks.append(f"""{top_level_video_html}    <div class="scene clip" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1" data-huashu-grammar="{grammar}" data-huashu-camera="{cam_move}"{inline_style}>
+            elif grammar == "data_split_stage" and stat_info is not None:
+                # Huashu `t3_finance_chart` Axes-First Animated Data Stage (only when a real quantity exists)
+                lbl_esc = _esc(stat_info["label"])
+                target_n = stat_info["target"]
+                start_n = stat_info["start"]
+                use_commas = "true" if stat_info["use_commas"] else "false"
+                suffix_js = json.dumps(stat_info["suffix"])
+
+                scene_blocks.append(f"""{top_level_video_html}    <div class="scene clip" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1" data-huashu-grammar="{grammar}" data-huashu-camera="{cam_move}"{inline_style}>
       <div class="media-stage" id="{sid}-stage">
         {media_html}
       </div>
       <div class="vignette"></div>
       <div class="grain"></div>
       <div class="cinema-gradient-top"></div>
-      <div class="cinema-gradient-bottom"></div>{huashu_svg_html}
-      <svg class="hud-svg" viewBox="0 0 1080 1920">
-        <line id="{sid}-rule" x1="74" y1="204" x2="620" y2="204" stroke="var(--accent)" stroke-width="4" stroke-dasharray="546" stroke-dashoffset="546" />
-        <circle id="{sid}-reticle" cx="965" cy="204" r="24" stroke="var(--accent)" stroke-width="2.5" stroke-dasharray="24 10" fill="none" opacity="0.75" />
-      </svg>
+      <div class="cinema-gradient-bottom"></div>
+      <div class="shutter-wipe" id="{sid}-shutter"></div>
       <div class="scene-content">
         <div class="top-hud-row">
-          <div id="{sid}-badge" class="callout-pill data-text">{callout}</div>
-          <div id="{sid}-source-tag" class="source-pill data-text">{grammar_badge}</div>
-        </div>{stat_html}
+          <div id="{sid}-era-pill" class="era-top-pill data-text">{era_tag}</div>
+          <div id="{sid}-step-pill" class="source-pill data-text">{step_badge}</div>
+        </div>
+        <div id="{sid}-stat-box" class="huashu-data-card">
+          <div class="huashu-data-left">
+            <div class="telemetry-header data-text">{callout}</div>
+            <div id="{sid}-stat" class="telemetry-number data-text">{start_n}</div>
+            <div class="telemetry-label display">{lbl_esc}</div>
+          </div>
+          <div class="huashu-data-bars">
+            <div class="hbar-row"><span class="hbar-tag data-text">BASELINE</span><div class="hbar-track"><div id="{sid}-b1" class="hbar-fill hbar-muted" style="width:34%;"></div></div></div>
+            <div class="hbar-row"><span class="hbar-tag data-text">ARCHIVE</span><div class="hbar-track"><div id="{sid}-b2" class="hbar-fill hbar-mid" style="width:62%;"></div></div></div>
+            <div class="hbar-row"><span class="hbar-tag data-text">RECORD</span><div class="hbar-track"><div id="{sid}-b3" class="hbar-fill hbar-peak" style="width:100%;"></div></div></div>
+          </div>
+        </div>
       </div>
     </div>""")
-
-            enter_t = round(st + 0.08, 3)
-            # Huashu Director Camera Choreography (zero blur, never 3 consecutive push-ins!)
-            if not is_video:
-                gsap_lines.append(
-                    self.huashu_director.build_camera_gsap_line(
-                        sid=sid, move=cam_move, st=st, dur=dur, grammar=grammar
-                    )
-                )
-
-            gsap_lines.extend(huashu_gsap)
-            gsap_lines.append(
-                f'  tl.to("#{sid}-rule", {{ strokeDashoffset: 0, duration: 0.50, ease: "expo.out" }}, {enter_t:.3f});'
-            )
-            gsap_lines.append(
-                f'  tl.fromTo("#{sid}-reticle", {{ rotation: 0, scale: 0.8 }}, {{ rotation: 180, scale: 1.0, duration: {dur:.3f}, ease: "none", transformOrigin: "50% 50%" }}, {st:.3f});'
-            )
-            gsap_lines.append(
-                f'  tl.from("#{sid}-badge", {{ y: -26, autoAlpha: 0, duration: 0.36, ease: "back.out(1.6)" }}, {enter_t:.3f});'
-            )
-            gsap_lines.append(
-                f'  tl.from("#{sid}-source-tag", {{ x: 24, autoAlpha: 0, duration: 0.38, ease: "power3.out" }}, {round(enter_t + 0.06, 3):.3f});'
-            )
-
-            if stat_info is not None:
-                target_n = stat_info["target"]
-                start_n = stat_info["start"]
-                use_commas = "true" if stat_info["use_commas"] else "false"
-                suffix_js = json.dumps(stat_info["suffix"])
-                gsap_lines.append(
-                    f'  tl.from("#{sid}-stat-box", {{ x: -36, autoAlpha: 0, duration: 0.36, ease: "back.out(1.5)" }}, {round(enter_t + 0.06, 3):.3f});'
-                )
-                gsap_lines.append(
-                    f'  tl.fromTo("#{sid}-gauge", {{ scaleX: 0 }}, {{ scaleX: 1, duration: {min(1.3, dur * 0.55):.2f}, ease: "expo.out", transformOrigin: "left center" }}, {round(enter_t + 0.10, 3):.3f});'
-                )
-                gsap_lines.append(
+                if not is_video:
+                    gsap_lines.append(self.huashu_director.build_camera_gsap_line(sid=sid, move=cam_move, st=st, dur=dur, grammar=grammar))
+                gsap_lines.extend([
+                    f'  tl.fromTo("#{sid}-shutter", {{ xPercent: 0 }}, {{ xPercent: 105, duration: 0.42, ease: "expo.inOut" }}, {st:.3f});',
+                    f'  tl.from("#{sid}-era-pill", {{ y: -22, autoAlpha: 0, duration: 0.34, ease: "power3.out" }}, {enter_t:.3f});',
+                    f'  tl.from("#{sid}-step-pill", {{ x: 20, autoAlpha: 0, duration: 0.34, ease: "power3.out" }}, {enter_t:.3f});',
+                    f'  tl.from("#{sid}-stat-box", {{ y: 36, autoAlpha: 0, duration: 0.38, ease: "back.out(1.5)" }}, {round(enter_t + 0.08, 3):.3f});',
+                    f'  tl.fromTo("#{sid}-b1", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.38, ease: "power3.out", transformOrigin: "left center" }}, {round(enter_t + 0.18, 3):.3f});',
+                    f'  tl.fromTo("#{sid}-b2", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.44, ease: "power3.out", transformOrigin: "left center" }}, {round(enter_t + 0.26, 3):.3f});',
+                    f'  tl.fromTo("#{sid}-b3", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.56, ease: "back.out(1.6)", transformOrigin: "left center" }}, {round(enter_t + 0.34, 3):.3f});',
                     f'  (function() {{ var c = {{ v: {start_n} }}; '
                     f'tl.to(c, {{ v: {target_n}, duration: {min(1.25, dur * 0.52):.2f}, ease: "power2.out", '
                     f'onUpdate: function() {{ var el = document.getElementById("{sid}-stat"); '
-                    f'if (el) {{ var n = Math.round(c.v); el.textContent = ({use_commas} ? n.toLocaleString("en-US") : n.toString()) + {suffix_js}; }} }} }}, {round(enter_t + 0.06, 3):.3f}); }})();'
-                )
+                    f'if (el) {{ var n = Math.round(c.v); el.textContent = ({use_commas} ? n.toLocaleString("en-US") : n.toString()) + {suffix_js}; }} }} }}, {round(enter_t + 0.10, 3):.3f}); }})();',
+                ])
+
+            elif grammar == "cinema_letterbox_stage":
+                # Huashu `long_scroll` Widescreen Panavision Aperture + Scrolling Timeline Rail
+                scene_blocks.append(f"""{top_level_video_html}    <div class="scene clip" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1" data-huashu-grammar="{grammar}" data-huashu-camera="{cam_move}"{inline_style}>
+      <div class="media-stage" id="{sid}-stage">
+        {media_html}
+      </div>
+      <div class="vignette"></div>
+      <div class="grain"></div>
+      <div class="letterbox-top" id="{sid}-lb-top">
+        <div class="top-hud-row" style="width:100%;">
+          <div id="{sid}-era-pill" class="era-top-pill data-text">{era_tag}</div>
+          <div id="{sid}-step-pill" class="source-pill data-text">{step_badge}</div>
+        </div>
+      </div>
+      <div class="letterbox-bottom" id="{sid}-lb-bot">
+        <div class="timeline-ruler-wrap">
+          <div class="timeline-ruler-ticks" id="{sid}-ruler"></div>
+        </div>
+        <div id="{sid}-callout-card" class="letterbox-callout-row">
+          <span class="lb-kicker data-text">CHRONICLE FOCUS</span>
+          <div class="lb-hl-box">
+            <div class="vox-hl-bar" id="{sid}-hl"></div>
+            <span class="lb-title display">{callout}</span>
+          </div>
+        </div>
+      </div>
+    </div>""")
+                if not is_video:
+                    gsap_lines.append(self.huashu_director.build_camera_gsap_line(sid=sid, move=cam_move, st=st, dur=dur, grammar=grammar))
+                gsap_lines.extend([
+                    f'  tl.from("#{sid}-lb-top", {{ yPercent: -100, duration: 0.40, ease: "expo.out" }}, {st:.3f});',
+                    f'  tl.from("#{sid}-lb-bot", {{ yPercent: 100, duration: 0.40, ease: "expo.out" }}, {st:.3f});',
+                    f'  tl.fromTo("#{sid}-ruler", {{ x: 0 }}, {{ x: -260, duration: {dur:.3f}, ease: "none" }}, {st:.3f});',
+                    f'  tl.from("#{sid}-callout-card", {{ y: 20, autoAlpha: 0, duration: 0.34, ease: "power3.out" }}, {round(enter_t + 0.14, 3):.3f});',
+                    f'  tl.fromTo("#{sid}-hl", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.50, ease: "expo.out", transformOrigin: "left center" }}, {round(enter_t + 0.24, 3):.3f});',
+                ])
+
             else:
-                gsap_lines.append(
-                    f'  tl.from("#{sid}-era-card", {{ x: -32, autoAlpha: 0, duration: 0.36, ease: "power3.out" }}, {round(enter_t + 0.08, 3):.3f});'
-                )
+                # `fullbleed_hook_stage`: Unobstructed 9:16 Cinema + Kinetic Shutter Wipe + Single Highlighter Card
+                scene_blocks.append(f"""{top_level_video_html}    <div class="scene clip" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1" data-huashu-grammar="{grammar}" data-huashu-camera="{cam_move}"{inline_style}>
+      <div class="media-stage" id="{sid}-stage">
+        {media_html}
+      </div>
+      <div class="vignette"></div>
+      <div class="grain"></div>
+      <div class="cinema-gradient-top"></div>
+      <div class="cinema-gradient-bottom"></div>
+      <div class="shutter-wipe" id="{sid}-shutter"></div>
+      <div class="scene-content">
+        <div class="top-hud-row">
+          <div id="{sid}-era-pill" class="era-top-pill data-text">{era_tag}</div>
+          <div id="{sid}-step-pill" class="source-pill data-text">{step_badge}</div>
+        </div>
+        <div id="{sid}-era-card" class="era-lower-card">
+          <div class="vox-hl-wrap">
+            <div class="vox-hl-bar" id="{sid}-hl"></div>
+            <div class="era-subject display">{callout}</div>
+          </div>
+        </div>
+      </div>
+    </div>""")
+                if not is_video:
+                    gsap_lines.append(self.huashu_director.build_camera_gsap_line(sid=sid, move=cam_move, st=st, dur=dur, grammar=grammar))
+                if idx > 0:
+                    gsap_lines.append(
+                        f'  tl.fromTo("#{sid}-shutter", {{ xPercent: 0 }}, {{ xPercent: 105, duration: 0.38, ease: "expo.inOut" }}, {st:.3f});'
+                    )
+                else:
+                    gsap_lines.append(f'  tl.set("#{sid}-shutter", {{ autoAlpha: 0 }}, 0);')
+                gsap_lines.extend([
+                    f'  tl.from("#{sid}-era-pill", {{ y: -24, autoAlpha: 0, duration: 0.34, ease: "back.out(1.6)" }}, {enter_t:.3f});',
+                    f'  tl.from("#{sid}-step-pill", {{ x: 22, autoAlpha: 0, duration: 0.34, ease: "power3.out" }}, {round(enter_t + 0.05, 3):.3f});',
+                    f'  tl.from("#{sid}-era-card", {{ x: -32, autoAlpha: 0, duration: 0.36, ease: "power3.out" }}, {round(enter_t + 0.08, 3):.3f});',
+                    f'  tl.fromTo("#{sid}-hl", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.50, ease: "expo.out", transformOrigin: "left center" }}, {round(enter_t + 0.22, 3):.3f});',
+                ])
 
         # Broadcast Zero-Collision Karaoke Pill Captions
         caption_dom_items: List[str] = []
@@ -574,12 +704,16 @@ class HyperFramesComposer:
   <style>
     :root {{
       --bg: {theme["bg"]};
+      --desk-bg: {theme.get("desk_bg", "#12100E")};
       --ink: {theme["ink"]};
+      --paper: {theme.get("paper", "#F4EFE6")};
+      --paper-ink: {theme.get("paper_ink", "#141210")};
       --accent: {theme["accent"]};
       --crimson: {theme["secondary"]};
       --emerald: {theme["tertiary"]};
       --muted: #9aa4b2;
-      --panel: {theme["desk_tint"]};
+      --panel: {theme["panel"]};
+      --highlighter: {theme["highlighter"]};
       --font-display: "Space Grotesk", "Montserrat", "DejaVu Sans", sans-serif;
       --font-data: "IBM Plex Mono", "DejaVu Sans Mono", monospace;
     }}
@@ -617,73 +751,274 @@ class HyperFramesComposer:
       justify-content: center;
     }}
     .scene-media, .scene-video {{
-      width: 1080px;
-      height: 1920px;
+      width: 100%;
+      height: 100%;
       object-fit: cover;
       transform-origin: center center;
+    }}
+    /* Stage 1: Huashu Vox Tactile Archival Print Stage */
+    .vox-desk-bg {{
+      background: radial-gradient(circle at 50% 38%, #1d1915 0%, var(--desk-bg) 72%, #070605 100%);
+    }}
+    .vox-grid-pattern {{
+      position: absolute;
+      inset: 0;
+      opacity: 0.22;
+      background-image:
+        linear-gradient(to right, rgba(255, 215, 0, 0.14) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 215, 0, 0.14) 1px, transparent 1px);
+      background-size: 60px 60px;
+      pointer-events: none;
+    }}
+    .vox-print-card {{
+      position: absolute;
+      top: 225px;
+      left: 76px;
+      width: 928px;
+      height: 1060px;
+      background: var(--paper);
+      border-radius: 10px;
+      padding: 18px 18px 0 18px;
+      box-shadow: 0 38px 80px rgba(0, 0, 0, 0.88), 0 4px 16px rgba(0, 0, 0, 0.55);
+      z-index: 14;
+      display: flex;
+      flex-direction: column;
+      transform-origin: center center;
+    }}
+    .vox-tape-top {{
+      position: absolute;
+      top: -18px;
+      left: 50%;
+      transform: translateX(-50%) rotate(-1.5deg);
+      width: 210px;
+      height: 42px;
+      background: rgba(245, 232, 196, 0.72);
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+      z-index: 16;
+    }}
+    .vox-photo-window {{
+      width: 100%;
+      height: 928px;
+      overflow: hidden;
+      border-radius: 4px;
+      background: #090909;
+      position: relative;
+    }}
+    .vox-print-footer {{
+      height: 114px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      color: var(--paper-ink);
+    }}
+    .vox-hl-wrap {{
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 14px;
+    }}
+    .vox-hl-bar {{
+      position: absolute;
+      inset: 0;
+      background: var(--highlighter);
+      border-radius: 6px;
+      z-index: 0;
+    }}
+    .vox-print-caption {{
+      position: relative;
+      z-index: 1;
+      font-size: 33px;
+      font-weight: 700;
+      color: var(--paper-ink);
+      letter-spacing: 0.04em;
+    }}
+    .vox-print-ref {{
+      font-size: 20px;
+      font-weight: 700;
+      color: #5c5346;
+      letter-spacing: 0.08em;
+    }}
+    /* Kinetic Shutter Wipe Transition */
+    .shutter-wipe {{
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, var(--accent) 0%, #1a1510 22%, #0a0908 100%);
+      z-index: 45;
+      pointer-events: none;
+    }}
+    /* Stage 2: Huashu Animated Data Split Stage */
+    .huashu-data-card {{
+      align-self: stretch;
+      margin-top: auto;
+      margin-bottom: 545px;
+      background: rgba(8, 10, 16, 0.90);
+      border: 2px solid rgba(255, 255, 255, 0.16);
+      border-left: 8px solid var(--emerald);
+      border-radius: 0 20px 20px 0;
+      padding: 22px 30px;
+      box-shadow: 0 22px 50px rgba(0, 0, 0, 0.82);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 28px;
+    }}
+    .huashu-data-left {{
+      flex: 0 0 auto;
+    }}
+    .huashu-data-bars {{
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      border-left: 2px solid rgba(255, 255, 255, 0.14);
+      padding-left: 24px;
+    }}
+    .hbar-row {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }}
+    .hbar-tag {{
+      width: 92px;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+    }}
+    .hbar-track {{
+      flex: 1;
+      height: 16px;
+      background: rgba(255, 255, 255, 0.10);
+      border-radius: 999px;
+      overflow: hidden;
+    }}
+    .hbar-fill {{
+      height: 100%;
+      border-radius: 999px;
+    }}
+    .hbar-muted {{ background: rgba(154, 164, 178, 0.55); }}
+    .hbar-mid {{ background: var(--accent); }}
+    .hbar-peak {{ background: linear-gradient(90deg, var(--emerald), var(--accent)); }}
+    /* Stage 3: Huashu Widescreen Letterbox & Scrolling Timeline Rail */
+    .letterbox-top {{
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 230px;
+      background: #07080c;
+      border-bottom: 3px solid var(--accent);
+      z-index: 25;
+      padding: 96px 74px 0 74px;
+      display: flex;
+      align-items: flex-start;
+    }}
+    .letterbox-bottom {{
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 700px;
+      background: linear-gradient(to bottom, rgba(7, 8, 12, 0.96) 0%, #07080c 28%);
+      border-top: 3px solid var(--accent);
+      z-index: 25;
+      padding: 22px 74px 0 74px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }}
+    .timeline-ruler-wrap {{
+      width: 100%;
+      height: 26px;
+      overflow: hidden;
+      position: relative;
+      opacity: 0.72;
+    }}
+    .timeline-ruler-ticks {{
+      width: 1400px;
+      height: 100%;
+      background-image: repeating-linear-gradient(
+        to right,
+        var(--accent) 0px,
+        var(--accent) 2px,
+        transparent 2px,
+        transparent 24px
+      );
+    }}
+    .letterbox-callout-row {{
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }}
+    .lb-kicker {{
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.1em;
+      padding: 6px 14px;
+      border: 1.5px solid var(--accent);
+      border-radius: 8px;
+    }}
+    .lb-hl-box {{
+      position: relative;
+      padding: 6px 16px;
+    }}
+    .lb-title {{
+      position: relative;
+      z-index: 1;
+      font-size: 34px;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: 0.04em;
     }}
     .vignette {{
       position: absolute;
       inset: 0;
       pointer-events: none;
       z-index: 10;
-      background: radial-gradient(ellipse at center, transparent 52%, rgba(4, 6, 10, 0.64) 100%);
+      background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 6, 10, 0.62) 100%);
     }}
     .cinema-gradient-top {{
       position: absolute;
       left: 0;
       right: 0;
       top: 0;
-      height: 340px;
+      height: 310px;
       pointer-events: none;
       z-index: 11;
-      background: linear-gradient(to bottom, rgba(5, 7, 12, 0.78) 0%, transparent 100%);
+      background: linear-gradient(to bottom, rgba(5, 7, 12, 0.76) 0%, transparent 100%);
     }}
     .cinema-gradient-bottom {{
       position: absolute;
       left: 0;
       right: 0;
       bottom: 0;
-      height: 760px;
+      height: 740px;
       pointer-events: none;
       z-index: 12;
-      background: linear-gradient(to top, rgba(5, 7, 12, 0.92) 0%, rgba(5, 7, 12, 0.54) 52%, transparent 100%);
+      background: linear-gradient(to top, rgba(5, 7, 12, 0.92) 0%, rgba(5, 7, 12, 0.52) 52%, transparent 100%);
     }}
     .grain {{
       position: absolute;
       inset: 0;
       pointer-events: none;
       z-index: 15;
-      opacity: 0.12;
+      opacity: 0.10;
       background-image:
         radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1.2px),
-        radial-gradient(rgba(0, 0, 0, 0.16) 1px, transparent 1.2px);
+        radial-gradient(rgba(0, 0, 0, 0.15) 1px, transparent 1.2px);
       background-size: 3px 3px, 5px 5px;
       background-position: 0 0, 1px 2px;
       mix-blend-mode: overlay;
-    }}
-    .huashu-layer {{
-      position: absolute;
-      inset: 0;
-      width: 1080px;
-      height: 1920px;
-      pointer-events: none;
-      z-index: 16;
-    }}
-    .hud-svg {{
-      position: absolute;
-      inset: 0;
-      width: 1080px;
-      height: 1920px;
-      pointer-events: none;
-      z-index: 18;
     }}
     .scene-content {{
       position: relative;
       z-index: 20;
       width: 100%;
       height: 100%;
-      padding: 112px 74px;
+      padding: 104px 74px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
@@ -694,94 +1029,65 @@ class HyperFramesComposer:
       justify-content: space-between;
       gap: 16px;
     }}
-    .callout-pill {{
+    .era-top-pill {{
       background: var(--panel);
       border: 2px solid var(--accent);
       color: var(--accent);
-      padding: 12px 26px;
+      padding: 10px 24px;
       border-radius: 12px;
-      font-size: 27px;
+      font-size: 24px;
       font-weight: 700;
-      letter-spacing: 0.07em;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.58);
+      letter-spacing: 0.08em;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
     }}
     .source-pill {{
       background: rgba(8, 10, 15, 0.82);
-      border: 1px solid rgba(255, 255, 255, 0.24);
+      border: 1px solid rgba(255, 255, 255, 0.22);
       color: var(--ink);
       padding: 10px 20px;
       border-radius: 999px;
-      font-size: 18px;
+      font-size: 19px;
       font-weight: 600;
-      letter-spacing: 0.05em;
-    }}
-    .telemetry-card {{
-      align-self: flex-start;
-      margin-top: auto;
-      margin-bottom: 560px;
-      min-width: 340px;
-      background: rgba(7, 10, 16, 0.86);
-      border: 1.5px solid rgba(0, 245, 155, 0.45);
-      border-left: 7px solid var(--emerald);
-      padding: 16px 28px 20px 28px;
-      border-radius: 0 18px 18px 0;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75);
+      letter-spacing: 0.06em;
     }}
     .telemetry-header {{
-      font-size: 18px;
+      font-size: 19px;
+      font-weight: 700;
       color: var(--emerald);
-      letter-spacing: 0.09em;
+      letter-spacing: 0.08em;
       margin-bottom: 4px;
     }}
     .telemetry-number {{
-      font-size: 84px;
+      font-size: 82px;
       font-weight: 700;
-      line-height: 1.05;
+      line-height: 1.04;
       color: #ffffff;
       text-shadow: 0 6px 22px rgba(0, 245, 155, 0.35);
     }}
     .telemetry-label {{
-      font-size: 23px;
+      font-size: 22px;
       font-weight: 700;
       letter-spacing: 0.08em;
       color: var(--accent);
       margin-top: 4px;
     }}
-    .telemetry-gauge-track {{
-      margin-top: 10px;
-      width: 100%;
-      height: 6px;
-      background: rgba(255, 255, 255, 0.15);
-      border-radius: 999px;
-      overflow: hidden;
-    }}
-    .telemetry-gauge-fill {{
-      width: 100%;
-      height: 100%;
-      background: linear-gradient(90deg, var(--emerald), var(--accent));
-      border-radius: 999px;
-    }}
     .era-lower-card {{
       align-self: flex-start;
       margin-top: auto;
-      margin-bottom: 565px;
-      background: rgba(8, 10, 16, 0.82);
-      border-left: 6px solid var(--accent);
-      padding: 14px 26px;
+      margin-bottom: 560px;
+      background: rgba(8, 10, 16, 0.86);
+      border-left: 7px solid var(--accent);
+      padding: 16px 28px;
       border-radius: 0 16px 16px 0;
-      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.70);
-    }}
-    .era-kicker {{
-      font-size: 18px;
-      color: var(--accent);
-      letter-spacing: 0.1em;
-      margin-bottom: 4px;
+      box-shadow: 0 16px 38px rgba(0, 0, 0, 0.75);
     }}
     .era-subject {{
-      font-size: 32px;
+      position: relative;
+      z-index: 1;
+      font-size: 34px;
       font-weight: 700;
       color: #ffffff;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.04em;
     }}
     #caption-stage {{
       position: absolute;
@@ -803,7 +1109,7 @@ class HyperFramesComposer:
       justify-content: center;
     }}
     .caption-dock {{
-      background: rgba(6, 8, 14, 0.85);
+      background: rgba(6, 8, 14, 0.86);
       border: 1.5px solid rgba(255, 255, 255, 0.18);
       border-radius: 22px;
       padding: 14px 26px;
@@ -927,32 +1233,27 @@ class HyperFramesComposer:
         theme: Dict[str, str],
     ) -> str:
         lines = [
-            f"# HyperFrames v17.0 + Huashu Art Motion Specification — {title}",
+            f"# HyperFrames v18.0 + Huashu Art Motion Specification — {title}",
             f"- **Topic**: {topic}",
             f"- **Locked Documentary Theme (`huashu-art-motion`)**: `{theme['name']}` (`{theme['accent']}` / `{theme['secondary']}`)",
             f"- **Resolution & Frame Rate**: `1080x1920` (9:16 Vertical) @ `30fps`",
             f"- **Total Duration**: `{total_duration:.2f}s` across `{len(tiled_scenes)}` scenes",
-            f"- **Optical Sharpness**: `0px` blur across all scenes (zero synthetic snow/dust particles)",
+            f"- **Visual Integrity**: Zero duplicate text, zero blind lines/pointers on photos, `0px` blur",
             f"- **HyperShader WebGL Transitions**: `{json.dumps(shader_transitions)}`",
             "",
-            "## Scene Timeline & Huashu Art Motion Grammar Breakdown",
-            "| Scene ID | Window (s) | Huashu Grammar | Camera Move | Callout | Visual Asset |",
+            "## Scene Timeline & Huashu Stage Layout Breakdown",
+            "| Scene ID | Window (s) | Huashu Stage Layout | Camera Move | Era Pill | Callout (Shown Once) |",
             "| :--- | :--- | :--- | :--- | :--- | :--- |",
         ]
         for s in tiled_scenes:
             lines.append(
                 f"| `{s['hf_id']}` | `{s['hf_start']:.2f}s – {s['hf_end']:.2f}s` | "
-                f"`{s.get('huashu_grammar', 's_living_canvas')}` | `{s.get('huashu_camera', 'slow_push_in')}` | "
-                f"`{s.get('on_screen_callout', '')}` | `{s['hf_asset_rel']}` |"
+                f"`{s.get('huashu_grammar', 'fullbleed_hook_stage')}` | `{s.get('huashu_camera', 'slow_push_in')}` | "
+                f"`{s.get('era_tag', '')}` | `{s.get('on_screen_callout', '')}` |"
             )
         return "\n".join(lines) + "\n"
 
     def _render_via_playwright_browser(self, output_mp4: Path) -> bool:
-        """
-        Deadlock-free Headless Chromium fallback renderer:
-        Opens `output/hyperframes_project/index.html` in Playwright Chromium, steps `window.__timelines["main"].seek(t)`
-        at 30fps, and pipes PNG frames directly to FFmpeg (`stderr=subprocess.DEVNULL` so OS pipe buffers never deadlock).
-        """
         if not self._last_build_args:
             return False
         try:
