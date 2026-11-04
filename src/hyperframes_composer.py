@@ -1,33 +1,38 @@
 """
-HeyGen HyperFrames Studio Pro Composition Authoring & Rendering Engine (`src/hyperframes_composer.py` — v13.0):
-1. Uses the exact proven v9.0 DOM & GSAP contract (`<div class="scene clip" ...>`, single-string GSAP selectors,
-   paused GSAP 3.14.2 timeline at `window.__timelines["main"] = tl`, and midpoint `HyperShader.init`).
-2. 100% Razor-Sharp Images from Frame 0 (`ZERO blur filter` on `.scene-media` and `.scene-video`!).
+HeyGen HyperFrames Studio Pro + Huashu Art Motion Composition & Rendering Engine (`src/hyperframes_composer.py` — v17.0):
+1. Combines HeyGen HyperFrames (`npx hyperframes render`, GSAP 3.14.2, WebGL `HyperShader`) with
+   `alchaincyf/huashu-art-motion` explainer grammars (`y2_vox_desk`, `y3_whiteboard_map`, `t3_data_chronicle`,
+   `y1_kurzgesagt_scale`, `s_living_canvas`) and Director Camera Choreography (`HuashuArtMotionDirector`).
+2. 100% Razor-Sharp Images from Frame 0 (`ZERO blur filter` and `ZERO cheap snow/particle filters`).
 3. Broadcast Zero-Collision Karaoke Pill Captions (`caption-pill-karaoke`):
-   - Merges standalone punctuation tokens (`,`, `.`, `;`, `:`, `!`, `?`, `—`) onto preceding words.
-   - Clamps chunk windows (`c_end <= next_c_start - 0.03s`) so two caption phrases never overlap.
+   - Merges standalone punctuation tokens onto preceding words.
+   - Clamps chunk windows (`c_end <= next_c_start - 0.025s`) so two caption phrases never overlap.
    - Highlights active words with solid semantic pills (`#FFD700` Gold, `#FF334B` Crimson, `#00F59B` Emerald)
-     and vertical lift (`y: -5`, `scale: 1.0`) inside pre-padded `.cap-word` pills (`padding: 6px 16px`, `gap: 20px`)
-     so words NEVER expand horizontally into each other.
-4. Triple-Redundant HyperFrames HTML Render Pipeline (`try_cli_render`):
-   - Attempt 1: `npx hyperframes render --quality draft` (with WebGL `HyperShader`)
-   - Attempt 2: `npx hyperframes render --quality draft` (Pure-GSAP mode)
-   - Attempt 3: Built-in Headless Chromium / Playwright deterministic 30fps `window.__timelines["main"].seek(t)`
-     HTML-to-MP4 renderer — guaranteeing `output/hyperframes_project/index.html` is ALWAYS rendered as real
-     HyperFrames HTML+CSS+SVG+GSAP and NEVER falls back to plain old FFmpeg subtitles!
+     and vertical lift (`y: -5`).
+4. Genuine `npx hyperframes render` Priority 1 Pipeline (`try_cli_render`):
+   - Attempt 1: `npx hyperframes render --quality draft` (with WebGL `HyperShader` + Huashu Art Motion SVG/GSAP layers)
+   - Attempt 2: `npx hyperframes render --quality draft` (Pure-GSAP + Huashu Art Motion mode)
+   - Attempt 3: Deadlock-free Headless Chromium / Playwright deterministic 30fps `window.__timelines["main"].seek(t)`
+     HTML-to-MP4 fallback.
 """
 from __future__ import annotations
 import html
 import json
 import os
 import re
+import re
 import shutil
 import subprocess
-import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from voice_engine import WordTiming
+try:
+    from voice_engine import WordTiming
+    from huashu_art_motion import HuashuArtMotionDirector
+except ImportError:
+    from src.voice_engine import WordTiming
+    from src.huashu_art_motion import HuashuArtMotionDirector
 
 PUNCT_ONLY_RE = re.compile(r"^[,.;:!?—–\-\"'\)\]\}\u2014\u2013]+$")
 LEADING_PUNCT_RE = re.compile(r"^([,.;:!?—–\-]+)(.+)$")
@@ -226,6 +231,8 @@ class HyperFramesComposer:
     def __init__(self, project_dir: Path = Path("output/hyperframes_project")):
         self.project_dir = project_dir
         self.assets_dir = self.project_dir / "assets"
+        self.huashu_director = HuashuArtMotionDirector()
+        self.last_huashu_lint: Optional[Dict[str, Any]] = None
         self._last_build_args: Optional[Dict[str, Any]] = None
 
     def build_project(
@@ -236,6 +243,7 @@ class HyperFramesComposer:
         word_timings: List[WordTiming],
         master_audio_wav: Path,
         enable_shaders: bool = True,
+        era_keywords: Optional[List[str]] = None,
     ) -> Path:
         if self.project_dir.exists():
             shutil.rmtree(self.project_dir)
@@ -243,6 +251,15 @@ class HyperFramesComposer:
 
         audio_rel = "assets/master_audio.wav"
         shutil.copy2(master_audio_wav, self.project_dir / audio_rel)
+
+        # Step 1: Run Huashu Art Motion Storyboard Lint & Grammar/Camera Assignment
+        self.last_huashu_lint = self.huashu_director.lint_storyboard(
+            topic=topic,
+            scenes=scenes,
+            era_keywords=era_keywords,
+            stat_extractor=_extract_smart_stat,
+        )
+        theme = self.last_huashu_lint["theme"]
 
         cursor = 0.0
         tiled_scenes: List[Dict[str, Any]] = []
@@ -275,6 +292,7 @@ class HyperFramesComposer:
             "word_timings": word_timings,
             "audio_rel": audio_rel,
             "total_duration": total_duration,
+            "theme": theme,
         }
 
         shader_anchors: List[str] = []
@@ -301,16 +319,17 @@ class HyperFramesComposer:
             total_duration=total_duration,
             shader_anchors=shader_anchors,
             shader_transitions=shader_transitions,
+            theme=theme,
         )
         (self.project_dir / "index.html").write_text(index_html, encoding="utf-8")
         (self.project_dir / "preview.html").write_text(self._generate_preview_html(), encoding="utf-8")
         (self.project_dir / "DESIGN.md").write_text(
-            self._generate_design_md(topic, title, tiled_scenes, total_duration, shader_transitions),
+            self._generate_design_md(topic, title, tiled_scenes, total_duration, shader_transitions, theme),
             encoding="utf-8",
         )
         print(
-            f"[HyperFrames] Authored v13.0 Studio Pro 1080x1920 composition -> {self.project_dir / 'index.html'} "
-            f"({len(tiled_scenes)} scenes, {len(shader_transitions)} WebGL shaders, {total_duration:.2f}s)"
+            f"[HyperFrames + HuashuArtMotion] Authored v17.0 Studio Pro 1080x1920 composition -> {self.project_dir / 'index.html'} "
+            f"({len(tiled_scenes)} scenes, theme='{theme['name']}', {len(shader_transitions)} WebGL shaders, {total_duration:.2f}s)"
         )
         return self.project_dir
 
@@ -324,7 +343,9 @@ class HyperFramesComposer:
         total_duration: float,
         shader_anchors: List[str],
         shader_transitions: List[Dict[str, Any]],
+        theme: Optional[Dict[str, str]] = None,
     ) -> str:
+        theme = theme or self.huashu_director.select_palette_for_topic(topic)
         scene_blocks: List[str] = []
         gsap_lines: List[str] = []
 
@@ -341,14 +362,12 @@ class HyperFramesComposer:
             callout = _esc((s.get("on_screen_callout") or f"ARCHIVE BEAT #{idx + 1:02d}").upper()[:28])
             subject = _esc((s.get("visual_subject") or topic)[:68])
             era_tag = _esc((s.get("era_tag") or f"CHRONICLE // BEAT {idx + 1:02d}").upper()[:28])
-            kind_badge = (
-                "COMFYUI 9:16 AI VIDEO"
-                if "COMFYUI" in str(s.get("asset_kind", ""))
-                else ("AI 9:16 RECONSTRUCTION" if "AI RECONSTRUCTION" in str(s.get("asset_kind", "")) else "VERIFIED ARCHIVAL RECORD")
-            )
+            grammar = str(s.get("huashu_grammar") or "s_living_canvas")
+            grammar_badge = _esc(str(s.get("huashu_grammar_label") or "HUASHU // ART MOTION"))
+            cam_move = str(s.get("huashu_camera") or "slow_push_in")
             stat_info = _extract_smart_stat(s)
 
-            # Exact v9.0 visibility contract (`class="scene clip"` + autoAlpha / opacity) that passed `npx hyperframes render`
+            # Exact v9.0 visibility contract (`class="scene clip"` + autoAlpha / opacity) that passes `npx hyperframes render`
             if sid in anchor_set:
                 inline_style = ' style="opacity:0;"'
                 if sid == shader_anchors[0]:
@@ -365,7 +384,6 @@ class HyperFramesComposer:
 
             top_level_video_html = ""
             if is_video:
-                # Top-level child of #main (never nested inside <div id="s1" data-start="..."> -> passes `video_nested_in_timed_element`!)
                 top_level_video_html = (
                     f'    <video id="{sid}-vid" class="scene-video" src="./{asset_rel}" '
                     f'data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="0" loop muted playsinline preload="auto"></video>\n'
@@ -375,6 +393,11 @@ class HyperFramesComposer:
                 media_html = (
                     f'<img id="{sid}-img" class="scene-media" src="./{asset_rel}" alt="{subject}" />'
                 )
+
+            # Build Huashu Art Motion SVG/HTML layer + GSAP tweens for this scene
+            huashu_svg_html, huashu_gsap = self.huashu_director.build_scene_grammar_layer(
+                scene=s, sid=sid, st=st, dur=dur, stat_info=stat_info
+            )
 
             stat_html = ""
             if stat_info is not None:
@@ -395,14 +418,14 @@ class HyperFramesComposer:
           <div class="era-subject display">{callout}</div>
         </div>"""
 
-            scene_blocks.append(f"""{top_level_video_html}    <div class="scene clip" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1"{inline_style}>
+            scene_blocks.append(f"""{top_level_video_html}    <div class="scene clip" id="{sid}" data-start="{st:.3f}" data-duration="{dur:.3f}" data-track-index="1" data-huashu-grammar="{grammar}" data-huashu-camera="{cam_move}"{inline_style}>
       <div class="media-stage" id="{sid}-stage">
         {media_html}
       </div>
       <div class="vignette"></div>
       <div class="grain"></div>
       <div class="cinema-gradient-top"></div>
-      <div class="cinema-gradient-bottom"></div>
+      <div class="cinema-gradient-bottom"></div>{huashu_svg_html}
       <svg class="hud-svg" viewBox="0 0 1080 1920">
         <line id="{sid}-rule" x1="74" y1="204" x2="620" y2="204" stroke="var(--accent)" stroke-width="4" stroke-dasharray="546" stroke-dashoffset="546" />
         <circle id="{sid}-reticle" cx="965" cy="204" r="24" stroke="var(--accent)" stroke-width="2.5" stroke-dasharray="24 10" fill="none" opacity="0.75" />
@@ -410,30 +433,21 @@ class HyperFramesComposer:
       <div class="scene-content">
         <div class="top-hud-row">
           <div id="{sid}-badge" class="callout-pill data-text">{callout}</div>
-          <div id="{sid}-source-tag" class="source-pill data-text">{kind_badge}</div>
+          <div id="{sid}-source-tag" class="source-pill data-text">{grammar_badge}</div>
         </div>{stat_html}
       </div>
     </div>""")
 
             enter_t = round(st + 0.08, 3)
-            # ZERO BLUR FILTER on images — 100% razor-sharp from t=0.00s!
+            # Huashu Director Camera Choreography (zero blur, never 3 consecutive push-ins!)
             if not is_video:
-                if idx % 3 == 0:
-                    gsap_lines.append(
-                        f'  tl.fromTo("#{sid}-img", {{ scale: 1.03, x: 0, y: 0 }}, '
-                        f'{{ scale: 1.15, x: 0, y: -14, duration: {dur:.3f}, ease: "none" }}, {st:.3f});'
+                gsap_lines.append(
+                    self.huashu_director.build_camera_gsap_line(
+                        sid=sid, move=cam_move, st=st, dur=dur, grammar=grammar
                     )
-                elif idx % 3 == 1:
-                    gsap_lines.append(
-                        f'  tl.fromTo("#{sid}-img", {{ scale: 1.16, x: -22, y: 8 }}, '
-                        f'{{ scale: 1.04, x: 22, y: -8, duration: {dur:.3f}, ease: "none" }}, {st:.3f});'
-                    )
-                else:
-                    gsap_lines.append(
-                        f'  tl.fromTo("#{sid}-img", {{ scale: 1.08, x: 16, y: 18 }}, '
-                        f'{{ scale: 1.18, x: -16, y: -18, duration: {dur:.3f}, ease: "none" }}, {st:.3f});'
-                    )
+                )
 
+            gsap_lines.extend(huashu_gsap)
             gsap_lines.append(
                 f'  tl.to("#{sid}-rule", {{ strokeDashoffset: 0, duration: 0.50, ease: "expo.out" }}, {enter_t:.3f});'
             )
@@ -534,7 +548,7 @@ class HyperFramesComposer:
             shader_init_js = f"""
   if (window.HyperShader && typeof window.HyperShader.init === "function") {{
     window.HyperShader.init({{
-      bgColor: "#08090d",
+      bgColor: "{theme["bg"]}",
       scenes: {json.dumps(shader_anchors)},
       timeline: tl,
       transitions: {json.dumps(shader_transitions)}
@@ -559,13 +573,13 @@ class HyperFramesComposer:
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {{
-      --bg: #08090d;
-      --ink: #f5f5f7;
-      --accent: #ffd700;
-      --crimson: #ff334b;
-      --emerald: #00f59b;
+      --bg: {theme["bg"]};
+      --ink: {theme["ink"]};
+      --accent: {theme["accent"]};
+      --crimson: {theme["secondary"]};
+      --emerald: {theme["tertiary"]};
       --muted: #9aa4b2;
-      --panel: rgba(8, 10, 16, 0.84);
+      --panel: {theme["desk_tint"]};
       --font-display: "Space Grotesk", "Montserrat", "DejaVu Sans", sans-serif;
       --font-data: "IBM Plex Mono", "DejaVu Sans Mono", monospace;
     }}
@@ -640,13 +654,21 @@ class HyperFramesComposer:
       inset: 0;
       pointer-events: none;
       z-index: 15;
-      opacity: 0.14;
+      opacity: 0.12;
       background-image:
-        radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1.2px),
-        radial-gradient(rgba(0, 0, 0, 0.18) 1px, transparent 1.2px);
+        radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1.2px),
+        radial-gradient(rgba(0, 0, 0, 0.16) 1px, transparent 1.2px);
       background-size: 3px 3px, 5px 5px;
       background-position: 0 0, 1px 2px;
       mix-blend-mode: overlay;
+    }}
+    .huashu-layer {{
+      position: absolute;
+      inset: 0;
+      width: 1080px;
+      height: 1920px;
+      pointer-events: none;
+      z-index: 16;
     }}
     .hud-svg {{
       position: absolute;
@@ -684,12 +706,12 @@ class HyperFramesComposer:
       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.58);
     }}
     .source-pill {{
-      background: rgba(8, 10, 15, 0.78);
+      background: rgba(8, 10, 15, 0.82);
       border: 1px solid rgba(255, 255, 255, 0.24);
       color: var(--ink);
       padding: 10px 20px;
       border-radius: 999px;
-      font-size: 19px;
+      font-size: 18px;
       font-weight: 600;
       letter-spacing: 0.05em;
     }}
@@ -698,7 +720,7 @@ class HyperFramesComposer:
       margin-top: auto;
       margin-bottom: 560px;
       min-width: 340px;
-      background: rgba(7, 10, 16, 0.84);
+      background: rgba(7, 10, 16, 0.86);
       border: 1.5px solid rgba(0, 245, 155, 0.45);
       border-left: 7px solid var(--emerald);
       padding: 16px 28px 20px 28px;
@@ -743,7 +765,7 @@ class HyperFramesComposer:
       align-self: flex-start;
       margin-top: auto;
       margin-bottom: 565px;
-      background: rgba(8, 10, 16, 0.80);
+      background: rgba(8, 10, 16, 0.82);
       border-left: 6px solid var(--accent);
       padding: 14px 26px;
       border-radius: 0 16px 16px 0;
@@ -874,7 +896,7 @@ class HyperFramesComposer:
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>HyperFrames Studio Preview</title>
+  <title>HyperFrames + Huashu Art Motion Studio Preview</title>
   <style>
     html, body { margin: 0; padding: 0; background: #111; height: 100%; overflow: hidden; }
   </style>
@@ -902,151 +924,45 @@ class HyperFramesComposer:
         tiled_scenes: List[Dict[str, Any]],
         total_duration: float,
         shader_transitions: List[Dict[str, Any]],
+        theme: Dict[str, str],
     ) -> str:
         lines = [
-            f"# HyperFrames v13.0 Studio Pro Specification — {title}",
+            f"# HyperFrames v17.0 + Huashu Art Motion Specification — {title}",
             f"- **Topic**: {topic}",
+            f"- **Locked Documentary Theme (`huashu-art-motion`)**: `{theme['name']}` (`{theme['accent']}` / `{theme['secondary']}`)",
             f"- **Resolution & Frame Rate**: `1080x1920` (9:16 Vertical) @ `30fps`",
             f"- **Total Duration**: `{total_duration:.2f}s` across `{len(tiled_scenes)}` scenes",
-            f"- **Optical Sharpness**: `0px` blur across all scenes",
-            f"- **Caption Architecture**: Zero-collision `caption-pill-karaoke` dock (`padding: 6px 16px`, `column-gap: 18px`, vertical lift `y: -5`)",
+            f"- **Optical Sharpness**: `0px` blur across all scenes (zero synthetic snow/dust particles)",
             f"- **HyperShader WebGL Transitions**: `{json.dumps(shader_transitions)}`",
             "",
-            "## Scene Timeline Breakdown",
-            "| Scene ID | Window (s) | Duration (s) | Callout | Visual Asset |",
-            "| :--- | :--- | :--- | :--- | :--- |",
+            "## Scene Timeline & Huashu Art Motion Grammar Breakdown",
+            "| Scene ID | Window (s) | Huashu Grammar | Camera Move | Callout | Visual Asset |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
         ]
         for s in tiled_scenes:
             lines.append(
-                f"| `{s['hf_id']}` | `{s['hf_start']:.2f}s – {s['hf_end']:.2f}s` | `{s['hf_duration']:.2f}s` | "
+                f"| `{s['hf_id']}` | `{s['hf_start']:.2f}s – {s['hf_end']:.2f}s` | "
+                f"`{s.get('huashu_grammar', 's_living_canvas')}` | `{s.get('huashu_camera', 'slow_push_in')}` | "
                 f"`{s.get('on_screen_callout', '')}` | `{s['hf_asset_rel']}` |"
             )
         return "\n".join(lines) + "\n"
 
-    def _build_concatenated_background_video(self, bg_mp4: Path) -> bool:
-        """
-        Concatenates all 10 `tiled_scenes` (converting any still `.jpg` scene to a 30fps `.mp4` segment if needed)
-        into a single seamless `1080x1920 @ 30fps` background video stream (`bg_mp4`).
-        Because FFmpeg decodes the H.264 video stream directly in C/assembly, Headless Chromium never has to decode
-        `<video>` tags (preventing black frames in `chromium_headless_shell`!).
-        """
-        if not self._last_build_args:
-            return False
-        tiled_scenes = self._last_build_args["tiled_scenes"]
-        seg_dir = self.project_dir / "_concat_segs"
-        seg_dir.mkdir(parents=True, exist_ok=True)
-        concat_list_file = seg_dir / "concat.txt"
-        concat_lines: List[str] = []
-
-        for idx, s in enumerate(tiled_scenes):
-            dur = float(s["hf_duration"])
-            asset_file = (self.project_dir / s["hf_asset_rel"]).resolve()
-            seg_mp4 = (seg_dir / f"seg_{idx + 1:02d}.mp4").resolve()
-            if s.get("asset_type") == "video":
-                cmd = [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(asset_file),
-                    "-t",
-                    f"{dur:.3f}",
-                    "-vf",
-                    f"scale={self.WIDTH}:{self.HEIGHT}:force_original_aspect_ratio=increase,crop={self.WIDTH}:{self.HEIGHT},fps={self.FPS},setsar=1,format=yuv420p",
-                    "-r",
-                    str(self.FPS),
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "ultrafast",
-                    "-crf",
-                    "17",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-an",
-                    str(seg_mp4),
-                ]
-            else:
-                cmd = [
-                    "ffmpeg",
-                    "-y",
-                    "-loop",
-                    "1",
-                    "-i",
-                    str(asset_file),
-                    "-t",
-                    f"{dur:.3f}",
-                    "-vf",
-                    f"scale={self.WIDTH}:{self.HEIGHT}:force_original_aspect_ratio=increase,crop={self.WIDTH}:{self.HEIGHT},fps={self.FPS},setsar=1,format=yuv420p",
-                    "-r",
-                    str(self.FPS),
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "ultrafast",
-                    "-crf",
-                    "17",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-an",
-                    str(seg_mp4),
-                ]
-            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=True)
-            concat_lines.append(f"file '{seg_mp4}'")
-
-        concat_list_file.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(concat_list_file),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "17",
-                "-pix_fmt",
-                "yuv420p",
-                "-an",
-                str(bg_mp4.resolve()),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=90,
-            check=True,
-        )
-        shutil.rmtree(seg_dir, ignore_errors=True)
-        return bg_mp4.exists() and bg_mp4.stat().st_size > 25_000
-
     def _render_via_playwright_browser(self, output_mp4: Path) -> bool:
         """
-        FFmpeg + Transparent Headless Chromium HyperFrames Compositor:
-        1. Concatenates the 10 GPU-rendered `1080x1920 @ 30fps` ComfyUI 2.5D Depth-Parallax video clips into `_bg_track.mp4`.
-        2. Opens `output/hyperframes_project/index.html` in Headless Chromium with a transparent background (`omit_background=True`),
-           steps `window.__timelines["main"].seek(t)` at 30fps, and pipes the transparent RGBA PNG HyperFrames HUD + GSAP +
-           Karaoke Captions directly into FFmpeg's `[0:v][1:v]overlay=0:0` filter over `_bg_track.mp4` + `master_audio.wav`!
-        - Zero H.264 `<video>` codec issues in `chromium_headless_shell` (zero black frames!).
-        - Completes in ~2.5 minutes instead of timing out after 10 minutes in Node.js `videoFrameExtractor.ts`!
+        Deadlock-free Headless Chromium fallback renderer:
+        Opens `output/hyperframes_project/index.html` in Playwright Chromium, steps `window.__timelines["main"].seek(t)`
+        at 30fps, and pipes PNG frames directly to FFmpeg (`stderr=subprocess.DEVNULL` so OS pipe buffers never deadlock).
         """
         if not self._last_build_args:
             return False
         try:
             from playwright.sync_api import sync_playwright  # type: ignore
         except Exception as exc:
-            print(f"[HyperFrames] Playwright import notice ({exc}); skipping browser compositor.", flush=True)
+            print(f"[HyperFrames] Playwright import notice ({exc}); skipping browser fallback.", flush=True)
             return False
 
-        bg_mp4 = (self.project_dir / "_bg_comfy_track.mp4").resolve()
         try:
             t0 = time.time()
-            if not self._build_concatenated_background_video(bg_mp4):
-                return False
-
             pure_html = self._generate_index_html(
                 topic=self._last_build_args["topic"],
                 title=self._last_build_args["title"],
@@ -1056,6 +972,7 @@ class HyperFramesComposer:
                 total_duration=self._last_build_args["total_duration"],
                 shader_anchors=[],
                 shader_transitions=[],
+                theme=self._last_build_args.get("theme"),
             )
             index_file = (self.project_dir / "index.html").resolve()
             index_file.write_text(pure_html, encoding="utf-8")
@@ -1063,16 +980,9 @@ class HyperFramesComposer:
             total_dur = float(self._last_build_args["total_duration"])
             total_frames = max(30, int(round(total_dur * self.FPS)))
 
-            print(
-                f"[HyperFrames] Compositing {total_frames} frames ({total_dur:.2f}s @ 30fps) of HyperFrames HTML/GSAP HUD "
-                f"over 10/10 ComfyUI GPU 2.5D video scenes...",
-                flush=True,
-            )
             ffmpeg_cmd = [
                 "ffmpeg",
                 "-y",
-                "-i",
-                str(bg_mp4),
                 "-f",
                 "image2pipe",
                 "-vcodec",
@@ -1083,12 +993,6 @@ class HyperFramesComposer:
                 "-",
                 "-i",
                 str(audio_file),
-                "-filter_complex",
-                "[0:v][1:v]overlay=0:0:shortest=1,format=yuv420p[vout]",
-                "-map",
-                "[vout]",
-                "-map",
-                "2:a:0",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -1117,9 +1021,6 @@ class HyperFramesComposer:
                 browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
                 page = browser.new_page(viewport={"width": self.WIDTH, "height": self.HEIGHT})
                 page.goto(f"file://{index_file}", wait_until="networkidle", timeout=45000)
-                page.add_style_tag(
-                    content="html, body, #main, .scene { background: transparent !important; } .scene-video, .media-stage { display: none !important; }"
-                )
                 page.wait_for_timeout(300)
 
                 for frame_idx in range(total_frames):
@@ -1132,7 +1033,7 @@ class HyperFramesComposer:
                         }""",
                         t_sec,
                     )
-                    png_bytes = page.screenshot(type="png", omit_background=True)
+                    png_bytes = page.screenshot(type="png")
                     if ff_proc.stdin:
                         ff_proc.stdin.write(png_bytes)
 
@@ -1141,23 +1042,19 @@ class HyperFramesComposer:
             if ff_proc.stdin:
                 ff_proc.stdin.close()
             ff_proc.wait(timeout=120)
-            bg_mp4.unlink(missing_ok=True)
 
             if ff_proc.returncode == 0 and output_mp4.exists() and output_mp4.stat().st_size > 250_000:
                 print(
-                    f"[HyperFrames] Successfully rendered MP4 via HyperFrames HTML + ComfyUI GPU Video Compositor "
+                    f"[HyperFrames] Rendered MP4 via Headless Chromium HTML+Huashu compositor "
                     f"({output_mp4.stat().st_size // 1024} KB in {time.time() - t0:.1f}s)!",
                     flush=True,
                 )
                 return True
-            err_tail = ff_proc.stderr.read().decode("utf-8", "ignore")[-400:] if ff_proc.stderr else ""
-            print(f"[HyperFrames] Compositor FFmpeg notice ({ff_proc.returncode}): {err_tail}", flush=True)
         except Exception as exc:
-            bg_mp4.unlink(missing_ok=True)
-            print(f"[HyperFrames] Headless Chromium compositor notice: {exc}", flush=True)
+            print(f"[HyperFrames] Headless Chromium fallback notice: {exc}", flush=True)
         return False
 
-    def try_cli_render(self, output_mp4: Path, timeout_sec: int = 900) -> bool:
+    def try_cli_render(self, output_mp4: Path, timeout_sec: int = 600) -> bool:
         if os.getenv("RENDER_ENGINE", "hyperframes").strip().lower() == "ffmpeg":
             return False
 
@@ -1181,9 +1078,6 @@ class HyperFramesComposer:
             except Exception:
                 pass
 
-        has_videos = False  # Always run genuine `npx hyperframes render` FIRST!
-
-        if npx_bin:
             try:
                 for attempt in (1, 2):
                     if attempt == 2 and self._last_build_args is not None:
@@ -1196,6 +1090,7 @@ class HyperFramesComposer:
                             total_duration=self._last_build_args["total_duration"],
                             shader_anchors=[],
                             shader_transitions=[],
+                            theme=self._last_build_args.get("theme"),
                         )
                         (self.project_dir / "index.html").write_text(pure_html, encoding="utf-8")
 
@@ -1232,7 +1127,7 @@ class HyperFramesComposer:
             except Exception as exc:
                 print(f"[HyperFrames] CLI execution notice ({exc}); falling back to Headless Chromium compositor.", flush=True)
 
-        if not has_videos and self._render_via_playwright_browser(output_mp4):
+        if self._render_via_playwright_browser(output_mp4):
             return True
 
         return False

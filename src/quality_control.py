@@ -37,7 +37,7 @@ def validate_rendered_short(video_path: Path, scenes: list, report_path: Path) -
 
     kinds = [str(s.get("asset_kind", "")).upper() for s in scenes]
     authentic = sum(1 for k in kinds if "AUTHENTIC VIDEO" in k or "ARCHIVAL IMAGE" in k)
-    ai = sum(1 for k in kinds if "AI RECONSTRUCTION" in k or "COMFYUI" in k or "MAI KEYFRAME" in k)
+    ai = sum(1 for k in kinds if "AI RECONSTRUCTION" in k or "MAI KEYFRAME" in k)
     graphics = sum(1 for k in kinds if "EDITORIAL GRAPHIC" in k)
 
     # Photographic/video coverage includes rights-cleared archival media + budgeted AI reconstructions

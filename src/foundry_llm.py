@@ -61,7 +61,8 @@ Return ONLY valid JSON with this shape:
     "on_screen_callout": "SHORT FACT OR DATE",
     "stat_value": "2,000+",
     "stat_label": "YEARS OLD",
-    "era_tag": "AEGEAN SEA // 1901"
+    "era_tag": "AEGEAN SEA // 1901",
+    "huashu_grammar": "y2_vox_desk"
   }]
 }
 """
